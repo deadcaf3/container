@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>container-runtime-linux-usb</string>
+	<string>container-usb-broker</string>
 	<key>CFBundleIdentifier</key>
 	<string>@USB_BUNDLE_ID@</string>
 	<key>CFBundleName</key>
@@ -18,5 +18,7 @@
 	<string>@VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>27.0</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
 </dict>
 </plist>

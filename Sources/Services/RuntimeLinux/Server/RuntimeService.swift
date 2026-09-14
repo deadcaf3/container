@@ -51,6 +51,7 @@ public actor RuntimeService {
     private var processes: [String: ProcessInfo] = [:]
     private var socketForwarders: [SocketForwarderResult] = []
     private var networkSessions: [XPCClientSession] = []
+    private var usbPassthrough: (any USBPassthroughControl)?
 
     private static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
     private static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
@@ -184,7 +185,7 @@ public actor RuntimeService {
                 guard #available(macOS 27, *) else {
                     throw ContainerizationError(.unsupported, message: "USB passthrough requires macOS 27 or newer")
                 }
-                let usbExtension = try USBPassthroughExtension(filters: config.usbDevices, log: self.log)
+                let usbExtension = try USBPassthroughExtension(filters: config.usbDevices, containerID: config.id, log: self.log)
                 usbPassthrough = usbExtension
                 vmm = ExtendingVirtualMachineManager(base: baseVMM, extensions: [usbExtension])
             } else {
@@ -305,6 +306,7 @@ public actor RuntimeService {
             )
             await self.setContainer(ctrInfo)
             await self.setNetworkSessions(sessions)
+            await self.setUSBPassthrough(usbPassthrough)
 
             do {
                 try await container.create()
@@ -340,6 +342,26 @@ public actor RuntimeService {
             }
             return message.reply()
         }
+    }
+
+    /// Attach a USB accessory forwarded by the USB broker.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with the following parameters:
+    ///     - accessory: The XPC representation of an `AAUSBAccessory`.
+    ///
+    /// - Returns: An XPC message with a `result` string describing what the runtime did.
+    @Sendable
+    public func usbAccessory(_ message: XPCMessage) async throws -> XPCMessage {
+        guard let usbPassthrough = self.usbPassthrough else {
+            throw ContainerizationError(.invalidState, message: "container was not started with --usb")
+        }
+        guard let representation = xpc_dictionary_get_value(message.underlying, "accessory") else {
+            throw ContainerizationError(.invalidArgument, message: "missing accessory")
+        }
+        let reply = message.reply()
+        reply.set(key: "result", value: usbPassthrough.receive(xpcRepresentation: representation))
+        return reply
     }
 
     /// Start the container workload inside the virtual machine.
@@ -1658,6 +1680,10 @@ extension RuntimeService {
         }
         info.state = state
         self.processes[id] = info
+    }
+
+    private func setUSBPassthrough(_ control: (any USBPassthroughControl)?) {
+        self.usbPassthrough = control
     }
 
     private func setContainer(_ info: ContainerInfo) {

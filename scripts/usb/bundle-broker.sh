@@ -13,22 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Stage the USB passthrough runtime as a provisioned app bundle.
+# Stage the USB broker as a provisioned app bundle.
 #
-#   scripts/usb/bundle-runtime.sh <staging-dir> <container-runtime-linux binary>
+#   scripts/usb/bundle-broker.sh <staging-dir> <container-usb-broker binary>
 #
 # Requires USB_BUNDLE_ID (an explicit App ID with the "Claim USB Accessory" capability) and
 # USB_PROFILE (a macOS development provisioning profile for it). USB_IDENTITY defaults to the
 # first "Apple Development" identity in the keychain.
 #
-# com.apple.developer.accessory-access.usb is a restricted entitlement: the binary must live in
-# an app bundle with the profile embedded, signed by a certificate the profile lists, or AMFI
-# kills it at launch. The plugin is separate from container-runtime-linux so a signing mistake
-# only affects containers started with --usb.
+# AccessoryAccess only assigns devices to an ordinary, Dock-visible application, and
+# com.apple.developer.accessory-access.usb is a restricted entitlement that needs an app bundle
+# with the profile embedded. The broker is that app; the runtime helper stays unprovisioned.
 set -euo pipefail
 
-STAGING_DIR="${1:?usage: bundle-runtime.sh <staging-dir> <runtime-binary>}"
-BINARY="${2:?usage: bundle-runtime.sh <staging-dir> <runtime-binary>}"
+STAGING_DIR="${1:?usage: bundle-broker.sh <staging-dir> <broker-binary> <runtime-binary>}"
+BINARY="${2:?usage: bundle-broker.sh <staging-dir> <broker-binary> <runtime-binary>}"
+RUNTIME_BINARY="${3:?usage: bundle-broker.sh <staging-dir> <broker-binary> <runtime-binary>}"
 : "${USB_BUNDLE_ID:?set USB_BUNDLE_ID to your App ID (see docs/usb-passthrough.md)}"
 : "${USB_PROFILE:?set USB_PROFILE to the .provisionprofile for USB_BUNDLE_ID}"
 USB_IDENTITY="${USB_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
@@ -37,19 +37,18 @@ USB_IDENTITY="${USB_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/
 [ -f "$USB_PROFILE" ] || { echo "USB_PROFILE not found: $USB_PROFILE" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-NAME=container-runtime-linux-usb
-APP="$STAGING_DIR/libexec/container/plugins/$NAME.app"
+NAME=container-usb-broker
+APP="$STAGING_DIR/libexec/container/usb/container-usb.app"
 VERSION="${RELEASE_VERSION:-0.0.0}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "==> staging $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS"
 install "$BINARY" "$APP/Contents/MacOS/$NAME"
-install -m 644 "$ROOT/Sources/Plugins/RuntimeLinux/usb/config.toml" "$APP/Contents/Resources/config.toml"
 sed -e "s/@USB_BUNDLE_ID@/$USB_BUNDLE_ID/" -e "s/@VERSION@/$VERSION/" \
-	"$ROOT/Sources/Plugins/RuntimeLinux/usb/Info.plist.in" > "$APP/Contents/Info.plist"
+	"$ROOT/Sources/Plugins/USBBroker/Info.plist.in" > "$APP/Contents/Info.plist"
 cp "$USB_PROFILE" "$APP/Contents/embedded.provisionprofile"
 
 # A development build must carry the profile's application and team identifiers, plus
@@ -80,6 +79,33 @@ print('    entitlements:', ', '.join(sorted(ent)))
 PY
 
 echo "==> signing with $USB_IDENTITY"
+# accessoryaccessd hands an assigned device only to a requestor it attributes to the client
+# app ("Invalid seize request. The device is not available for the requestor."), and that
+# attribution follows the executable's enclosing bundle. So the runtime helper that attaches
+# devices lives inside this bundle, signed with its identifier but no restricted entitlements
+# (AMFI cannot pair a bare Mach-O with the embedded profile), and the runtime plugin's binary
+# is a relative symlink to it.
+RUNTIME_IN_BUNDLE="$APP/Contents/MacOS/container-runtime-linux"
+install "$RUNTIME_BINARY" "$RUNTIME_IN_BUNDLE"
+cat > "$WORK/runtime.entitlements" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.virtualization</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+codesign --force --sign "$USB_IDENTITY" --identifier "$USB_BUNDLE_ID" --entitlements "$WORK/runtime.entitlements" --timestamp=none "$RUNTIME_IN_BUNDLE"
+PLUGIN_BIN="$STAGING_DIR/libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux"
+rm -f "$PLUGIN_BIN"
+ln -s ../../../usb/container-usb.app/Contents/MacOS/container-runtime-linux "$PLUGIN_BIN"
+
 codesign --force --sign "$USB_IDENTITY" --entitlements "$WORK/entitlements.plist" --timestamp=none "$APP"
 codesign --verify --strict --verbose=1 "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" || true

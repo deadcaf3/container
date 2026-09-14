@@ -168,9 +168,9 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@if [ -n "$(USB_PROFILE)" ] ; then \
-		echo Staging provisioned USB passthrough runtime... ; \
+		echo Staging provisioned USB broker... ; \
 		USB_BUNDLE_ID="$(USB_BUNDLE_ID)" USB_PROFILE="$(USB_PROFILE)" USB_IDENTITY="$(USB_IDENTITY)" RELEASE_VERSION="$(RELEASE_VERSION)" \
-			scripts/usb/bundle-runtime.sh "$(STAGING_DIR)" "$(BUILD_BIN_DIR)/container-runtime-linux" ; \
+			scripts/usb/bundle-broker.sh "$(STAGING_DIR)" "$(BUILD_BIN_DIR)/container-usb-broker" "$(BUILD_BIN_DIR)/container-runtime-linux" ; \
 	fi
 
 	@echo Creating application installer

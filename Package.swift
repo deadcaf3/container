@@ -420,7 +420,16 @@ let package = Package(
                 "ContainerXPC",
             ],
             path: "Sources/Plugins/RuntimeLinux",
-            exclude: ["config.toml", "usb"]
+            exclude: ["config.toml"]
+        ),
+        .executableTarget(
+            name: "container-usb-broker",
+            dependencies: [
+                "ContainerResource",
+                "ContainerXPC",
+            ],
+            path: "Sources/Plugins/USBBroker",
+            exclude: ["Info.plist.in"]
         ),
         .target(
             name: "ContainerRuntimeLinuxServer",

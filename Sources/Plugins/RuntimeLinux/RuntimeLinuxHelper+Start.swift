@@ -28,7 +28,10 @@ import SystemPackage
 
 extension RuntimeLinuxHelper {
     struct Start: AsyncParsableCommand {
-        static let label = "com.apple.container.runtime.container-runtime-linux"
+        /// Derived from the executable name so the same helper can run as another plugin (for
+        /// example container-runtime-linux-usb); clients build the mach service name from the
+        /// plugin name.
+        static let label = "com.apple.container.runtime.\(URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent)"
 
         static let configuration = CommandConfiguration(
             commandName: "start",

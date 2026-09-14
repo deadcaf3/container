@@ -70,6 +70,11 @@ public struct ContainerConfiguration: Sendable, Codable {
     /// default set is used. Set to `[]` to opt out, or provide a custom list
     /// to override the default entirely.
     public var readonlyPaths: [String]?
+    /// Physical USB devices to pass through to the container's VM.
+    public var usbDevices: [USBDeviceFilter] = []
+    /// Seconds to wait for requested USB devices to attach before starting the container.
+    /// When nil, the runtime's default is used.
+    public var usbWaitSeconds: Int?
     /// The time at which the container was created.
     public var creationDate: Date = Date()
 
@@ -98,6 +103,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         case stopSignal
         case maskedPaths
         case readonlyPaths
+        case usbDevices
+        case usbWaitSeconds
         case creationDate
     }
 
@@ -136,6 +143,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         stopSignal = try container.decodeIfPresent(String.self, forKey: .stopSignal)
         maskedPaths = try container.decodeIfPresent([String].self, forKey: .maskedPaths)
         readonlyPaths = try container.decodeIfPresent([String].self, forKey: .readonlyPaths)
+        usbDevices = try container.decodeIfPresent([USBDeviceFilter].self, forKey: .usbDevices) ?? []
+        usbWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .usbWaitSeconds)
         creationDate = try container.decodeIfPresent(Date.self, forKey: .creationDate) ?? Date(timeIntervalSince1970: 0)
     }
 

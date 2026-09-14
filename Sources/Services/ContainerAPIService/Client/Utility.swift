@@ -264,6 +264,28 @@ public struct Utility {
             config.runtimeHandler = runtime
         }
 
+        config.usbDevices = try management.usb.map { raw in
+            guard let filter = USBDeviceFilter(parsing: raw) else {
+                throw ContainerizationError(.invalidArgument, message: "invalid --usb value '\(raw)': expected hex vid or vid:pid, e.g. 1366 or 1366:0101")
+            }
+            return filter
+        }
+        if !config.usbDevices.isEmpty {
+            guard #available(macOS 27, *) else {
+                throw ContainerizationError(.unsupported, message: "--usb requires macOS 27 or newer")
+            }
+            if let runtime = management.runtime, runtime != USBDeviceFilter.runtimeHandler {
+                throw ContainerizationError(.invalidArgument, message: "--usb requires the \(USBDeviceFilter.runtimeHandler) runtime, not '\(runtime)'")
+            }
+            config.runtimeHandler = USBDeviceFilter.runtimeHandler
+        }
+        if let usbWait = management.usbWait {
+            guard usbWait >= 0 else {
+                throw ContainerizationError(.invalidArgument, message: "--usb-wait must not be negative")
+            }
+            config.usbWaitSeconds = usbWait
+        }
+
         return (config, kernel, management.initImage)
     }
 

@@ -420,7 +420,7 @@ let package = Package(
                 "ContainerXPC",
             ],
             path: "Sources/Plugins/RuntimeLinux",
-            exclude: ["config.toml"]
+            exclude: ["config.toml", "usb"]
         ),
         .target(
             name: "ContainerRuntimeLinuxServer",

@@ -196,7 +196,9 @@ public struct Flags {
             tmpFs: [String],
             useInit: Bool,
             virtualization: Bool,
-            volumes: [String]
+            volumes: [String],
+            usb: [String] = [],
+            usbWait: Int? = nil
         ) {
             self.arch = arch
             self.capAdd = capAdd
@@ -229,6 +231,8 @@ public struct Flags {
             self.useInit = useInit
             self.virtualization = virtualization
             self.volumes = volumes
+            self.usb = usb
+            self.usbWait = usbWait
         }
 
         @Option(name: .shortAndLong, help: "Set arch if image can target multiple architectures")
@@ -371,6 +375,23 @@ public struct Flags {
 
         @Option(name: .customLong("tmpfs"), help: "Add a tmpfs mount to the container at the given path")
         public var tmpFs: [String] = []
+
+        /// EXPERIMENTAL: The flag is subject to change.
+        @Option(
+            name: .customLong("usb"),
+            help: .init(
+                "[EXPERIMENTAL] Pass a physical USB device through to the container, matched by hex vendor and optional product ID (repeatable; requires macOS 27)",
+                valueName: "vid[:pid]"
+            )
+        )
+        public var usb: [String] = []
+
+        /// EXPERIMENTAL: The flag is subject to change.
+        @Option(
+            name: .customLong("usb-wait"),
+            help: .init("[EXPERIMENTAL] Seconds to wait for --usb devices to attach before starting (default: 5)", valueName: "seconds")
+        )
+        public var usbWait: Int?
 
         @Flag(
             name: .long,

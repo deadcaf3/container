@@ -172,12 +172,24 @@ public actor RuntimeService {
                 }
                 kernel.commandLine.kernelArgs.append("\(key)=\(value)")
             }
-            let vmm = VZVirtualMachineManager(
+            let baseVMM = VZVirtualMachineManager(
                 kernel: kernel,
                 initialFilesystem: bundle.initialFilesystem.asMount,
                 rosetta: config.rosetta,
                 logger: self.log
             )
+            let vmm: any VirtualMachineManager
+            var usbPassthrough: (any USBPassthroughControl)?
+            if !config.usbDevices.isEmpty {
+                guard #available(macOS 27, *) else {
+                    throw ContainerizationError(.unsupported, message: "USB passthrough requires macOS 27 or newer")
+                }
+                let usbExtension = try USBPassthroughExtension(filters: config.usbDevices, log: self.log)
+                usbPassthrough = usbExtension
+                vmm = ExtendingVirtualMachineManager(base: baseVMM, extensions: [usbExtension])
+            } else {
+                vmm = baseVMM
+            }
 
             let networkBootstrapInfos = try message.networkBootstrapInfos()
 
@@ -297,6 +309,19 @@ public actor RuntimeService {
             do {
                 try await container.create()
 
+                // The VM is running: register for the requested USB devices and give ones that are
+                // already assigned a moment to attach. Never fail here — a device assigned later
+                // from the menu extra is attached as it arrives.
+                if let usbPassthrough {
+                    try usbPassthrough.start()
+                    let wait = Duration.seconds(config.usbWaitSeconds ?? 5)
+                    if await !usbPassthrough.waitForRequested(timeout: wait) {
+                        self.log.warning(
+                            "requested USB devices not attached yet; assign them from the Virtual Machine Accessories menu",
+                            metadata: ["usb": "\(config.usbDevices)"])
+                    }
+                }
+
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
                 if !container.interfaces.isEmpty {
@@ -304,6 +329,7 @@ public actor RuntimeService {
                 }
                 await self.setState(.booted)
             } catch {
+                await usbPassthrough?.teardown()
                 do {
                     try await self.cleanUpContainer(containerInfo: ctrInfo)
                     await self.setState(.stopped)

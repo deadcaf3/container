@@ -167,6 +167,11 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
+	@if [ -n "$(USB_PROFILE)" ] ; then \
+		echo Staging provisioned USB passthrough runtime... ; \
+		USB_BUNDLE_ID="$(USB_BUNDLE_ID)" USB_PROFILE="$(USB_PROFILE)" USB_IDENTITY="$(USB_IDENTITY)" RELEASE_VERSION="$(RELEASE_VERSION)" \
+			scripts/usb/bundle-runtime.sh "$(STAGING_DIR)" "$(BUILD_BIN_DIR)/container-runtime-linux" ; \
+	fi
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)

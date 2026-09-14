@@ -1,0 +1,63 @@
+name: USB guest kernel
+
+# Builds the arm64 guest kernel with USB host support that `container run --usb` needs, and
+# attaches it to a GitHub release. GitHub's macOS runners cannot run `container` (no nested
+# virtualization), so this uses containerization's kernel Dockerfile and build.sh under Docker
+# on a Linux arm64 runner instead of scripts/usb/build-kernel.sh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create or update with the kernel
+        required: true
+        default: usb-kernel
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch containerization kernel tooling
+        run: |
+          tag=$(sed -n 's/^let scVersion = "\(.*\)"/\1/p' Package.swift)
+          git clone --depth 1 --branch "$tag" --filter=blob:none --sparse https://github.com/apple/containerization czn
+          git -C czn sparse-checkout set kernel
+          cat kernel/usb/config-arm64-usb.fragment >> czn/kernel/config-arm64
+          sed -i 's#cp "${IMAGE_PATH}" "/kernel/${OUTPUT_NAME}"#cp "${IMAGE_PATH}" "/kernel/${OUTPUT_NAME}" \&\& cp .config /kernel/config-final#' czn/kernel/build.sh
+          echo "CZ_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Build kernel
+        working-directory: czn/kernel
+        run: |
+          ksource=$(sed -n 's/^KSOURCE ?= //p' Makefile)
+          curl -fsSL -o source.tar.xz "$ksource"
+          docker build -t kernel-build image
+          docker run --rm -v "$PWD:/kernel" -w /kernel \
+            -e LOCALVERSION="-cz-$CZ_TAG-usb" kernel-build /bin/bash -c ./build.sh
+
+      - name: Verify USB options survived olddefconfig
+        run: |
+          missing=0
+          for option in $(grep -oE '^CONFIG_[A-Z0-9_]+' kernel/usb/config-arm64-usb.fragment); do
+            grep -q "^$option=y" czn/kernel/config-final || { echo "missing: $option"; missing=1; }
+          done
+          exit $missing
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir out
+          cp czn/kernel/vmlinux-arm64 out/vmlinux-arm64-usb
+          cp czn/kernel/config-final out/vmlinux-arm64-usb.config
+          (cd out && sha256sum vmlinux-arm64-usb > vmlinux-arm64-usb.sha256)
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --prerelease --title "USB guest kernel" \
+              --notes "arm64 guest kernel with USB host support for \`container run --usb\` (containerization $CZ_TAG kernel config + kernel/usb/config-arm64-usb.fragment)."
+          gh release upload "$TAG" out/* --clobber

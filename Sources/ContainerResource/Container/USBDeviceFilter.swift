@@ -19,10 +19,6 @@ import Foundation
 /// A physical USB device to pass through to the container's VM, matched by vendor and
 /// optionally product ID.
 public struct USBDeviceFilter: Sendable, Codable, Equatable, CustomStringConvertible {
-    /// The runtime plugin that handles USB passthrough. It is a separate, provisioned plugin
-    /// so that a signing problem cannot affect containers that don't request USB devices.
-    public static let runtimeHandler = "container-runtime-linux-usb"
-
     public var vendorID: UInt16
     public var productID: UInt16?
 

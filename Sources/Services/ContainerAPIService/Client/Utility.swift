@@ -274,10 +274,6 @@ public struct Utility {
             guard #available(macOS 27, *) else {
                 throw ContainerizationError(.unsupported, message: "--usb requires macOS 27 or newer")
             }
-            if let runtime = management.runtime, runtime != USBDeviceFilter.runtimeHandler {
-                throw ContainerizationError(.invalidArgument, message: "--usb requires the \(USBDeviceFilter.runtimeHandler) runtime, not '\(runtime)'")
-            }
-            config.runtimeHandler = USBDeviceFilter.runtimeHandler
         }
         if let usbWait = management.usbWait {
             guard usbWait >= 0 else {

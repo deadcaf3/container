@@ -60,4 +60,9 @@ public enum RuntimeRoutes: String {
     case snapshotDisk = "com.apple.container.runtime/snapshotDisk"
     /// Clean up unused space in the container filesystem.
     case clean = "com.apple.container.runtime/clean"
+
+    // MARK: - USB passthrough
+
+    /// Attach a USB accessory forwarded by the USB broker (served on the mach service).
+    case usbAccessory = "com.apple.container.runtime/usbAccessory"
 }

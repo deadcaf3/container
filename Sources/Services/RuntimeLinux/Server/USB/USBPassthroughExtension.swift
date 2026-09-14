@@ -15,56 +15,67 @@
 //===----------------------------------------------------------------------===//
 
 @preconcurrency import AccessoryAccess
+import AppKit
 import ContainerResource
 import Containerization
 import ContainerizationError
 import ContainerizationExtras
 import Foundation
 import Logging
-import Security
 @preconcurrency import Virtualization
 
 /// The runtime's handle on USB passthrough, independent of OS availability so it can be stored
 /// by code that also runs on older systems.
 protocol USBPassthroughControl: Sendable {
-    /// Registers for the requested devices. Call once the VM is running.
+    /// Launches the USB broker for this container. Call once the VM is running.
     func start() throws
     /// Returns true once every requested device has attached, or false after `timeout`.
     func waitForRequested(timeout: Duration) async -> Bool
-    /// Detaches every passed-through device and stops listening.
+    /// Attaches an accessory forwarded by the broker. Returns a short status for the broker.
+    func receive(xpcRepresentation: xpc_object_t) -> String
+    /// Detaches every passed-through device and quits the broker.
     func teardown() async
 }
 
 /// Passes physical USB devices through to a container's VM.
 ///
-/// Adds an XHCI controller to the VM configuration, receives devices from AccessoryAccess once
-/// the user assigns them (or immediately, if an earlier assignment persisted), and attaches them
-/// to the running VM. The device is then captured exclusively by the VM.
+/// AccessoryAccess only assigns devices to an ordinary, Dock-visible application, and this
+/// runtime is a launchd service, so it cannot receive devices itself. It launches the
+/// provisioned `container-usb` broker app, which receives devices assigned from the Virtual
+/// Machine Accessories menu and forwards matching ones here as XPC representations. This
+/// process needs no restricted entitlement to rebuild and attach them.
 @available(macOS 27, *)
-final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthroughControl, AAUSBAccessoryListener,
-    VZUSBController.Delegate, @unchecked Sendable
-{
-    static let entitlement = "com.apple.developer.accessory-access.usb"
+final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthroughControl, VZUSBController.Delegate, @unchecked Sendable {
+    static let brokerPath = "libexec/container/usb/container-usb.app"
 
     private let filters: [USBDeviceFilter]
+    private let containerID: String
+    private let brokerURL: URL
     private let log: Logger
     private let lock = NSLock()
 
     // Guarded by `lock`.
     private var instance: VZVirtualMachineInstance?
-    private var registered = false
+    private var started = false
+    private var broker: NSRunningApplication?
     private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16)] = [:]
     private var inFlight: Set<UInt64> = []
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
-    init(filters: [USBDeviceFilter], log: Logger) throws {
-        guard Self.hasEntitlement() else {
+    init(filters: [USBDeviceFilter], containerID: String, log: Logger) throws {
+        guard let installRoot = ProcessInfo.processInfo.environment["CONTAINER_INSTALL_ROOT"], !installRoot.isEmpty else {
+            throw ContainerizationError(.invalidState, message: "CONTAINER_INSTALL_ROOT is not set; cannot locate the USB broker")
+        }
+        let brokerURL = URL(fileURLWithPath: installRoot).appendingPathComponent(Self.brokerPath)
+        guard FileManager.default.fileExists(atPath: brokerURL.path) else {
             throw ContainerizationError(
-                .unsupported,
-                message: "this runtime is not provisioned for USB passthrough (missing \(Self.entitlement)); see docs/usb-passthrough.md"
+                .notFound,
+                message: "USB broker not found at \(brokerURL.path); build with USB_BUNDLE_ID and USB_PROFILE (see docs/usb-passthrough.md)"
             )
         }
         self.filters = filters
+        self.containerID = containerID
+        self.brokerURL = brokerURL
         self.log = log
     }
 
@@ -95,37 +106,48 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     // MARK: USBPassthroughControl
 
     func start() throws {
-        let alreadyRegistered = lock.withLock {
-            defer { registered = true }
-            return registered
+        let first = lock.withLock {
+            defer { started = true }
+            return !started
         }
-        guard !alreadyRegistered else {
+        guard first else {
             return
         }
 
-        // FB24018643: AAUSBAccessoryMatchingCriteria only accepts the legacy IOUSBDevice provider
-        // class with a vendor ID, so match per vendor and filter product IDs on arrival.
-        let vendors = Set(filters.map(\.vendorID)).sorted()
-        let criteria = try vendors.map { vendorID -> AAUSBAccessoryMatchingCriteria in
-            let dictionary: [String: any Sendable] = [
-                "IOProviderClass": "IOUSBDevice",
-                "idVendor": NSNumber(value: vendorID),
-            ]
-            guard let criteria = AAUSBAccessoryMatchingCriteria(deviceMatchingDictionary: dictionary) else {
-                throw ContainerizationError(.internalError, message: "USB matching criteria rejected for vendor \(String(format: "%04x", vendorID))")
-            }
-            return criteria
+        // The broker reaches this runtime on its mach service, which clients derive from the
+        // plugin name and container ID.
+        let plugin = URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
+        let service = "com.apple.container.runtime.\(plugin).\(containerID)"
+        var arguments = ["--service", service, "--container", containerID]
+        for filter in filters {
+            arguments += ["--usb", filter.description]
         }
 
-        log.info("usb: registering accessory listener", metadata: ["filters": "\(filters)"])
-        AAUSBAccessoryManager.shared.registerListener(self, matchingCriteria: criteria) { [self] connected, error in
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        configuration.arguments = arguments
+
+        log.info("usb: launching broker", metadata: ["broker": "\(brokerURL.path)", "filters": "\(filters)"])
+        NSWorkspace.shared.openApplication(at: brokerURL, configuration: configuration) { [self] application, error in
             if let error {
-                log.error("usb: registerListener failed", metadata: ["error": "\(error)"])
+                log.error("usb: broker failed to launch", metadata: ["error": "\(error)"])
                 return
             }
-            log.info("usb: listener registered", metadata: ["alreadyAssigned": "\(connected.count)"])
-            for accessory in connected {
-                receive(accessory)
+            guard let application else {
+                return
+            }
+            let stillWanted = lock.withLock {
+                if started {
+                    broker = application
+                }
+                return started
+            }
+            if stillWanted {
+                log.info("usb: broker running", metadata: ["pid": "\(application.processIdentifier)"])
+            } else {
+                application.terminate()
             }
         }
     }
@@ -153,37 +175,32 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         }
     }
 
+    func receive(xpcRepresentation: xpc_object_t) -> String {
+        guard let accessory = AAUSBAccessory(xpcRepresentation: xpcRepresentation) else {
+            log.warning("usb: broker sent an invalid accessory representation")
+            return "rejected: invalid accessory representation"
+        }
+        return receive(accessory)
+    }
+
     func teardown() async {
-        let (instance, wasRegistered, waiting) = lock.withLock {
+        let (instance, broker, waiting) = lock.withLock {
             defer {
-                registered = false
+                started = false
+                self.broker = nil
                 waiters.removeAll()
             }
-            return (self.instance, registered, Array(waiters.values))
+            return (self.instance, self.broker, Array(waiters.values))
         }
         waiting.forEach { $0.resume(returning: false) }
 
         if let instance {
             await detachAll(from: instance)
         }
-        if wasRegistered {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                AAUSBAccessoryManager.shared.unregisterListener(self) {
-                    continuation.resume()
-                }
-            }
-            log.info("usb: listener unregistered")
+        if let broker {
+            broker.terminate()
+            log.info("usb: broker terminated", metadata: ["pid": "\(broker.processIdentifier)"])
         }
-    }
-
-    // MARK: AAUSBAccessoryListener
-
-    func usbAccessoryDidConnect(_ usbAccessory: AAUSBAccessory) {
-        receive(usbAccessory)
-    }
-
-    func usbAccessoryDidDisconnect(_ usbAccessory: AAUSBAccessory) {
-        log.info("usb: accessory withdrawn", metadata: ["registryID": "\(Self.hex(usbAccessory.registryID))"])
     }
 
     // MARK: VZUSBController.Delegate
@@ -203,16 +220,16 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
 
     // MARK: Attach
 
-    private func receive(_ accessory: AAUSBAccessory) {
+    private func receive(_ accessory: AAUSBAccessory) -> String {
         let registryID = Self.hex(accessory.registryID)
         guard let (vendorID, productID) = Self.ids(from: accessory.deviceDescriptorData) else {
             log.warning("usb: unparseable device descriptor, ignoring", metadata: ["registryID": "\(registryID)"])
-            return
+            return "rejected: unparseable device descriptor"
         }
         let ids = String(format: "%04x:%04x", vendorID, productID)
         guard filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID) }) else {
             log.info("usb: accessory does not match --usb, ignoring", metadata: ["registryID": "\(registryID)", "ids": "\(ids)"])
-            return
+            return "ignored: \(ids) not requested"
         }
 
         let instance: VZVirtualMachineInstance? = lock.withLock {
@@ -223,7 +240,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             return self.instance
         }
         guard let instance else {
-            return
+            return "ignored: \(ids) already attached or VM not ready"
         }
 
         log.info("usb: attaching", metadata: ["registryID": "\(registryID)", "ids": "\(ids)"])
@@ -243,6 +260,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
                 self.finishAttach(accessory.registryID, error == nil ? device : nil, vendorID, productID, error: error.map { "\($0)" })
             }
         }
+        return "attaching \(ids)"
     }
 
     private func finishAttach(_ registryID: UInt64, _ device: VZUSBPassthroughDevice?, _ vendorID: UInt16, _ productID: UInt16, error: String?) {
@@ -315,12 +333,5 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
 
     private static func hex(_ value: UInt64) -> String {
         String(format: "0x%llx", value)
-    }
-
-    private static func hasEntitlement() -> Bool {
-        guard let task = SecTaskCreateFromSelf(nil) else {
-            return false
-        }
-        return SecTaskCopyValueForEntitlement(task, entitlement as CFString, nil) != nil
     }
 }

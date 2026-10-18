@@ -76,7 +76,7 @@ Pass it per container with `--kernel` so other containers keep the default kerne
 ```bash
 bin/container system start
 bin/container build -t usb-tools examples/usb
-bin/container run -d --name probe --usb 1366:0101 --kernel bin/vmlinux-arm64-usb usb-tools sleep infinity
+bin/container run -d --name probe --usb 1366 --kernel bin/vmlinux-arm64-usb usb-tools sleep infinity
 ```
 
 A **container** icon appears in the Dock while the container runs — that is the USB broker.
@@ -89,7 +89,15 @@ bin/container exec probe lsusb
 bin/container exec probe probe-rs list
 ```
 
-`--usb` takes a hex vendor ID (`1366`) or vendor and product (`1366:0101`) and can be repeated.
+`--usb` takes a hex vendor ID (`1366`) or vendor and product (`1366:0105`) and can be repeated.
+A vendor ID alone is the safer choice: product IDs differ between models of the same probe
+(SEGGER J-Links report `0101`, `0105`, `1061` and others), and only devices you assigned in the
+menu are attached either way. To look up a device's IDs:
+
+```bash
+system_profiler SPUSBHostDataType | grep -E "^ +[^ ].*:$|Vendor ID|Product ID"
+```
+
 The runtime waits briefly for devices before starting the container (`--usb-wait <seconds>`,
 default 5) and never fails if a device is missing: one assigned later is attached while the
 container runs. `container stop` detaches the device, quits the broker and returns the device

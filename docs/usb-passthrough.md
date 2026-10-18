@@ -4,7 +4,7 @@
 > [beriberikix/container](https://github.com/beriberikix/container).** Not part of apple/container.
 > Verified on macOS 27.0 (`26A428`) with Xcode 27.0 and a SEGGER J-Link.
 
-`container run --usb <vid[:pid]>` passes a physical USB device — a debug probe, a serial
+`container run --usb <vid[:pid[:serial]]>` passes a physical USB device — a debug probe, a serial
 adapter — through to the Linux VM backing a container, using the macOS 27
 `VZUSBPassthroughDevice` API. Inside the container the device appears under `/dev/bus/usb`
 and tools like `lsusb` and `probe-rs` use it directly. The capture is exclusive: macOS cannot
@@ -252,10 +252,10 @@ What stands between this proof of concept and `--usb` working out of the box.
   `kernel/config-arm64`, so upstreaming `config-arm64-usb.fragment` into containerization
   would not change what `container` boots.
 - **Fix, short term (fork):** `vmlinux-arm64-usb` is already a release asset
-  (`usb-kernel-0.1`). Have `--usb` warn when the container runs the default kernel and point at
-  that asset, or fetch it and use it when `--usb` is given without `--kernel`.
+  (`usb-kernel-0.1`), and `--usb` already warns when the kernel has no USB host support. Have
+  that warning point at the asset, or fetch it and use it when `--usb` is given without `--kernel`.
 - **Fix, long term:** add USB host support to Kata's kernel config fragments, which would reach
   `container` when it next bumps the Kata release. The fallback is for apple/container to host a
   USB kernel of its own and select it when `--usb` is given.
-- **Who can fix it:** the fork for the warning or automatic download; kata-containers for the
-  kernel config; apple/container for a hosted USB kernel.
+- **Who can fix it:** the fork for pointing at the asset or the automatic download;
+  kata-containers for the kernel config; apple/container for a hosted USB kernel.

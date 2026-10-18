@@ -92,8 +92,12 @@ extension Application {
                     env["SSH_AUTH_SOCK"] = sshAuthSock
                 }
 
-                let process = try await client.bootstrap(id: container.id, stdio: io.stdio, dynamicEnv: env)
+                var warning: String?
+                let process = try await client.bootstrap(id: container.id, stdio: io.stdio, dynamicEnv: env) { warning = $0 }
                 progress.finish()
+                if let warning {
+                    log.warning("\(warning)")
+                }
 
                 if detach {
                     try await process.start()

@@ -56,4 +56,7 @@ public enum RuntimeKeys: String {
 
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos
+
+    /// A non-fatal message from bootstrap for the user, such as USB devices not attached yet.
+    case warning
 }

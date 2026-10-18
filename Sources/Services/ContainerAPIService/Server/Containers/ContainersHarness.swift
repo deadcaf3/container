@@ -62,8 +62,12 @@ public struct ContainersHarness: Sendable {
         let data = message.dataNoCopy(key: .dynamicEnv)
         let env = try data.map { try JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
 
-        try await service.bootstrap(id: id, stdio: stdio, dynamicEnv: env)
-        return message.reply()
+        let warning = try await service.bootstrap(id: id, stdio: stdio, dynamicEnv: env)
+        let reply = message.reply()
+        if let warning {
+            reply.set(key: .warning, value: warning)
+        }
+        return reply
     }
 
     @Sendable

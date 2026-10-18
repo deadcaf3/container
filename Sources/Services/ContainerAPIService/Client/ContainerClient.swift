@@ -120,10 +120,13 @@ public struct ContainerClient: Sendable {
     }
 
     /// Bootstrap the container's init process.
+    ///
+    /// `onWarning` receives a non-fatal message for the user, if the runtime reported one.
     public func bootstrap(
         id: String,
         stdio: [FileHandle?],
-        dynamicEnv: [String: String] = [:]
+        dynamicEnv: [String: String] = [:],
+        onWarning: ((String) -> Void)? = nil
     ) async throws -> ClientProcess {
         let request = XPCMessage(route: .containerBootstrap)
 
@@ -148,7 +151,10 @@ public struct ContainerClient: Sendable {
             request.set(key: .dynamicEnv, value: dynamicEnv)
 
             request.set(key: .id, value: id)
-            try await xpcClient.send(request)
+            let reply = try await xpcClient.send(request)
+            if let warning = reply.string(key: .warning) {
+                onWarning?(warning)
+            }
             return ClientProcessImpl(containerId: id, xpcClient: xpcClient)
         } catch {
             throw ContainerizationError(

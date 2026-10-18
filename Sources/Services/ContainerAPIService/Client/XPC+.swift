@@ -60,6 +60,8 @@ public enum XPCKeys: String {
     case archive
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv
+    /// A non-fatal message from bootstrap for the user
+    case warning
 
     /// Health check request.
     case ping

@@ -315,6 +315,7 @@ public actor RuntimeService {
             await self.setNetworkSessions(sessions)
             await self.setUSBPassthrough(usbPassthrough)
 
+            var warning: String?
             do {
                 try await container.create()
 
@@ -325,6 +326,9 @@ public actor RuntimeService {
                     try usbPassthrough.start()
                     let wait = Duration.seconds(config.usbWaitSeconds ?? 5)
                     if await !usbPassthrough.waitForRequested(timeout: wait) {
+                        let devices = config.usbDevices.map(\.description).joined(separator: ", ")
+                        warning =
+                            "USB device(s) \(devices) not attached yet; choose \"Use with container\" for them in the Virtual Machine Accessories menu bar item. They attach as soon as they are assigned."
                         self.log.warning(
                             "requested USB devices not attached yet; assign them from the Virtual Machine Accessories menu",
                             metadata: ["usb": "\(config.usbDevices)"])
@@ -347,7 +351,11 @@ public actor RuntimeService {
                 }
                 throw error
             }
-            return message.reply()
+            let reply = message.reply()
+            if let warning {
+                reply.set(key: RuntimeKeys.warning.rawValue, value: warning)
+            }
+            return reply
         }
     }
 

@@ -77,11 +77,13 @@ public struct RuntimeClient: Sendable {
 
 // Runtime Methods
 extension RuntimeClient {
+    /// Returns a non-fatal message for the user, if the runtime reported one.
+    @discardableResult
     public func bootstrap(
         stdio: [FileHandle?],
         networkBootstrapInfos: [NetworkBootstrapInfo],
         dynamicEnv: [String: String] = [:]
-    ) async throws {
+    ) async throws -> String? {
         let request = XPCMessage(route: RuntimeRoutes.bootstrap.rawValue)
 
         for (i, h) in stdio.enumerated() {
@@ -106,7 +108,8 @@ extension RuntimeClient {
 
             let infosData = try JSONEncoder().encode(networkBootstrapInfos)
             request.set(key: RuntimeKeys.networkBootstrapInfos.rawValue, value: infosData)
-            try await self.client.send(request)
+            let reply = try await self.client.send(request)
+            return reply.string(key: RuntimeKeys.warning.rawValue)
         } catch {
             throw ContainerizationError(
                 .internalError,

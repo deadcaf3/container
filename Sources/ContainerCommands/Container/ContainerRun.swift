@@ -134,8 +134,12 @@ extension Application {
                     dynamicEnv["SSH_AUTH_SOCK"] = sshAuthSock
                 }
 
-                let process = try await client.bootstrap(id: id, stdio: io.stdio, dynamicEnv: dynamicEnv)
+                var warning: String?
+                let process = try await client.bootstrap(id: id, stdio: io.stdio, dynamicEnv: dynamicEnv) { warning = $0 }
                 progress.finish()
+                if let warning {
+                    log.warning("\(warning)")
+                }
 
                 if !self.managementFlags.cidfile.isEmpty {
                     let path = self.managementFlags.cidfile

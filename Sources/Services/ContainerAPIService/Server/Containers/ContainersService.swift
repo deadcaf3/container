@@ -373,7 +373,10 @@ public actor ContainersService {
     }
 
     /// Bootstrap the init process of the container.
-    public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws {
+    ///
+    /// Returns a non-fatal message for the user, if the runtime reported one.
+    @discardableResult
+    public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws -> String? {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -392,14 +395,14 @@ public actor ContainersService {
             )
         }
 
-        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+        return try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             var state = try await self.getContainerState(id: id, context: context)
 
             // We've already bootstrapped this container. Ideally we should be able to
             // return some sort of error code from the sandbox svc to check here, but this
             // is also a very simple check and faster than doing an rpc to get the same result.
             if state.client != nil {
-                return
+                return nil
             }
 
             let path = self.containerRoot.appendingPathComponent(id)
@@ -428,7 +431,7 @@ public actor ContainersService {
                     id: id,
                     runtime: runtime
                 )
-                try await runtimeClient.bootstrap(stdio: stdio, networkBootstrapInfos: networkBootstrapInfos, dynamicEnv: dynamicEnv)
+                let warning = try await runtimeClient.bootstrap(stdio: stdio, networkBootstrapInfos: networkBootstrapInfos, dynamicEnv: dynamicEnv)
 
                 try await self.exitMonitor.registerProcess(
                     id: id,
@@ -437,6 +440,7 @@ public actor ContainersService {
 
                 state.client = runtimeClient
                 await self.setContainerState(id, state, context: context)
+                return warning
             } catch {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: config.runtimeHandler,

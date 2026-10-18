@@ -325,7 +325,11 @@ public actor RuntimeService {
                 if let usbPassthrough {
                     try usbPassthrough.start()
                     let wait = Duration.seconds(config.usbWaitSeconds ?? 5)
-                    if await !usbPassthrough.waitForRequested(timeout: wait) {
+                    if await usbPassthrough.waitForRequested(timeout: wait) {
+                        // The guest kernel enumerates a device shortly after it attaches; give it
+                        // a moment so the workload sees the device from its first command.
+                        try await Task.sleep(for: .seconds(1))
+                    } else {
                         let devices = config.usbDevices.map(\.description).joined(separator: ", ")
                         var message =
                             "USB device(s) \(devices) not attached yet; choose \"Use with container\" for them in the Virtual Machine Accessories menu bar item. They attach as soon as they are assigned."

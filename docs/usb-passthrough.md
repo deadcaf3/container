@@ -102,10 +102,11 @@ spctl -a -t install -vv bin/release/container-installer.pkg   # accepted, source
 The package installs into `/usr/local` with the same identifiers as an apple/container release,
 so it replaces an existing installation.
 
-Verified so far, on a debug build: the signed package notarizes with no issues and, once
-stapled, a quarantined copy passes Gatekeeper. Its contents, unpacked in-tree, start, run
-containers with networking, and pass a J-Link through. A release build and installing the
-package into `/usr/local` have not been tested.
+Verified so far: on a debug build, the signed package notarizes with no issues and, once
+stapled, a quarantined copy passes Gatekeeper. A release build signed with `SIGN_IDENTITY` and
+installed into `/usr/local` with `make BUILD_CONFIGURATION=release ... install` starts, runs
+containers, and passes a J-Link through, including selection by serial. That install used an
+unsigned package without notarization; notarizing a release package has not been tested.
 
 ## Guest kernel
 
@@ -276,10 +277,9 @@ What stands between this proof of concept and `--usb` working out of the box.
   runs.
 - **Status:** solved in the fork, not yet published. A
   [Developer ID signed and notarized package](#distribution-build-developer-id) passes
-  Gatekeeper, and its contents pass a J-Link through.
-- **Remaining:** build the package in the release configuration, test installing it into
-  `/usr/local`, and publish it as a release asset. Users then trust the fork's team instead of
-  Apple.
+  Gatekeeper, and a release build installed into `/usr/local` passes a J-Link through.
+- **Remaining:** notarize the release package and publish it as a release asset. Users then
+  trust the fork's team instead of Apple.
 - **Who can fix it:** the fork's maintainer. Upstream, Apple would sign its own release with the
   entitlement.
 

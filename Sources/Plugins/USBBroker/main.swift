@@ -24,6 +24,9 @@
 /// `--usb` to the container's VM.
 ///
 ///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...
+///   container-usb-broker --shared
+///
+/// `--shared` runs one broker for every container (`SharedBroker`).
 
 @preconcurrency import AccessoryAccess
 import AppKit
@@ -144,19 +147,32 @@ final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
 @available(macOS 27, *)
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let arguments: BrokerArguments
+    /// Nil for the shared broker.
+    private let arguments: BrokerArguments?
     private var broker: Broker?
+    private var sharedBroker: SharedBroker?
     private var virtualMachine: VZVirtualMachine?
     private var vmDirectory: URL?
     private var runtimeExit: DispatchSourceProcess?
 
-    init(arguments: BrokerArguments) {
+    init(arguments: BrokerArguments?) {
         self.arguments = arguments
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        logger.info("broker for container \(self.arguments.containerID, privacy: .public): \(self.arguments.filters, privacy: .public)")
-        watchRuntime()
+        guard let arguments else {
+            logger.info("shared broker")
+            startPlaceholderVM()
+            let broker = SharedBroker()
+            sharedBroker = broker
+            broker.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                broker.register()
+            }
+            return
+        }
+        logger.info("broker for container \(arguments.containerID, privacy: .public): \(arguments.filters, privacy: .public)")
+        watchRuntime(pid: arguments.runtimePID)
         startPlaceholderVM()
         let broker = Broker(arguments: arguments)
         self.broker = broker
@@ -173,8 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quit when the runtime exits, so a crashed or stopped container never leaves a broker
     /// behind, even if no device was ever forwarded.
-    private func watchRuntime() {
-        let pid = arguments.runtimePID
+    private func watchRuntime(pid: pid_t) {
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
         source.setEventHandler {
             logger.info("runtime \(pid, privacy: .public) exited; quitting")
@@ -194,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startPlaceholderVM() {
         do {
             let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("container-usb-broker-\(arguments.containerID)", isDirectory: true)
+                .appendingPathComponent("container-usb-broker-\(arguments?.containerID ?? "shared")", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             vmDirectory = dir
             let diskURL = dir.appendingPathComponent("scratch.img")
@@ -229,14 +244,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-guard let arguments = BrokerArguments.parse(Array(CommandLine.arguments.dropFirst())) else {
-    FileHandle.standardError.write(Data("usage: container-usb-broker --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...\n".utf8))
+let shared = CommandLine.arguments.contains("--shared")
+let arguments = BrokerArguments.parse(Array(CommandLine.arguments.dropFirst()))
+guard shared || arguments != nil else {
+    FileHandle.standardError.write(
+        Data("usage: container-usb-broker --shared | --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...\n".utf8))
     exit(64)
 }
 
 @available(macOS 27, *)
 @MainActor
-func runBroker(arguments: BrokerArguments) {
+func runBroker(arguments: BrokerArguments?) {
     let application = NSApplication.shared
     // NSApplication holds its delegate weakly; this binding keeps it alive for run().
     let delegate = AppDelegate(arguments: arguments)
@@ -246,7 +264,7 @@ func runBroker(arguments: BrokerArguments) {
 }
 
 if #available(macOS 27, *) {
-    runBroker(arguments: arguments)
+    runBroker(arguments: shared ? nil : arguments)
 } else {
     FileHandle.standardError.write(Data("container-usb-broker requires macOS 27 or newer\n".utf8))
     exit(1)

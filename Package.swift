@@ -447,6 +447,7 @@ let package = Package(
         .executableTarget(
             name: "container-usb-broker",
             dependencies: [
+                .product(name: "Logging", package: "swift-log"),
                 "ContainerResource",
                 "ContainerXPC",
             ],

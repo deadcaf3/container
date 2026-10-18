@@ -227,6 +227,14 @@ So a USB build stages one provisioned app, `container-usb.app`, containing two e
   container's VM with `VZUSBPassthroughDevice` through a `VZInstanceExtension`, and detaches it
   on stop.
 
+The broker can also run as one shared instance for every container (`--shared`). An app
+launched by LaunchServices cannot check in a launchd mach service, and a broker that launchd
+starts is a background service that is never offered a device, so the shared broker has no
+fixed mach service of its own. It serves an anonymous XPC listener and checks its endpoint in
+with the API server (`com.apple.container.apiserver`), which launches the broker on demand and
+hands the endpoint to whoever needs it. The broker checks in again when the API server
+restarts and quits after 60 s without a request while no container holds a device.
+
 The guest kernel needs USB host support built in; the container's `/dev` is a devtmpfs, so
 `/dev/bus/usb` nodes appear without udev.
 

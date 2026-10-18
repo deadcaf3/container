@@ -118,7 +118,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         // plugin name and container ID.
         let plugin = URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         let service = "com.apple.container.runtime.\(plugin).\(containerID)"
-        var arguments = ["--service", service, "--container", containerID]
+        var arguments = ["--service", service, "--container", containerID, "--runtime-pid", "\(getpid())"]
         for filter in filters {
             arguments += ["--usb", filter.description]
         }

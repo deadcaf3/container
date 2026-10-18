@@ -23,7 +23,7 @@
 /// the ones matching `--usb` to the runtime as XPC representations, which the runtime attaches
 /// to the container's VM.
 ///
-///   container-usb-broker --service <runtime mach service> --container <id> --usb <vid[:pid]>...
+///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid]>...
 
 @preconcurrency import AccessoryAccess
 import AppKit
@@ -41,17 +41,20 @@ let usbAccessoryRoute = "com.apple.container.runtime/usbAccessory"
 struct BrokerArguments: Sendable {
     var service: String
     var containerID: String
+    var runtimePID: pid_t
     var filters: [USBDeviceFilter]
 
     static func parse(_ arguments: [String]) -> BrokerArguments? {
         var service: String?
         var containerID: String?
+        var runtimePID: pid_t?
         var filters: [USBDeviceFilter] = []
         var iterator = arguments.makeIterator()
         while let argument = iterator.next() {
             switch argument {
             case "--service": service = iterator.next()
             case "--container": containerID = iterator.next()
+            case "--runtime-pid": runtimePID = iterator.next().flatMap { pid_t($0) }
             case "--usb":
                 guard let value = iterator.next(), let filter = USBDeviceFilter(parsing: value) else {
                     return nil
@@ -60,10 +63,10 @@ struct BrokerArguments: Sendable {
             default: continue  // LaunchServices may add its own arguments.
             }
         }
-        guard let service, let containerID, !filters.isEmpty else {
+        guard let service, let containerID, let runtimePID, runtimePID > 0, !filters.isEmpty else {
             return nil
         }
-        return BrokerArguments(service: service, containerID: containerID, filters: filters)
+        return BrokerArguments(service: service, containerID: containerID, runtimePID: runtimePID, filters: filters)
     }
 }
 
@@ -74,7 +77,6 @@ final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
     private let client: XPCClient
     private let lock = NSLock()
     private var forwarded: Set<UInt64> = []
-    private var watchingRuntime = false
 
     init(arguments: BrokerArguments) {
         self.arguments = arguments
@@ -126,27 +128,9 @@ final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
             do {
                 let reply = try await client.send(message, responseTimeout: .seconds(30))
                 logger.info("runtime: \(reply.string(key: "result") ?? "accepted", privacy: .public)")
-                watchRuntime()
             } catch {
                 logger.error("forwarding \(ids, privacy: .public) failed: \(error, privacy: .public)")
                 _ = lock.withLock { forwarded.remove(accessory.registryID) }
-            }
-        }
-    }
-
-    /// Quit when the runtime goes away, so a crashed or stopped container never leaves a broker
-    /// holding its devices.
-    private func watchRuntime() {
-        guard lock.withLock({ () -> Bool in
-            defer { watchingRuntime = true }
-            return !watchingRuntime
-        }) else {
-            return
-        }
-        client.setDisconnectHandler {
-            logger.info("runtime disconnected; quitting")
-            Task { @MainActor in
-                NSApplication.shared.terminate(nil)
             }
         }
     }
@@ -159,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var broker: Broker?
     private var virtualMachine: VZVirtualMachine?
     private var vmDirectory: URL?
+    private var runtimeExit: DispatchSourceProcess?
 
     init(arguments: BrokerArguments) {
         self.arguments = arguments
@@ -166,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("broker for container \(self.arguments.containerID, privacy: .public): \(self.arguments.filters, privacy: .public)")
+        watchRuntime()
         startPlaceholderVM()
         let broker = Broker(arguments: arguments)
         self.broker = broker
@@ -177,6 +163,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let vmDirectory {
             try? FileManager.default.removeItem(at: vmDirectory)
+        }
+    }
+
+    /// Quit when the runtime exits, so a crashed or stopped container never leaves a broker
+    /// behind, even if no device was ever forwarded.
+    private func watchRuntime() {
+        let pid = arguments.runtimePID
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        source.setEventHandler {
+            logger.info("runtime \(pid, privacy: .public) exited; quitting")
+            NSApplication.shared.terminate(nil)
+        }
+        source.resume()
+        runtimeExit = source
+        // The runtime may have exited before the source was armed.
+        if kill(pid, 0) != 0 && errno == ESRCH {
+            logger.info("runtime \(pid, privacy: .public) already gone; quitting")
+            NSApplication.shared.terminate(nil)
         }
     }
 
@@ -221,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 guard let arguments = BrokerArguments.parse(Array(CommandLine.arguments.dropFirst())) else {
-    FileHandle.standardError.write(Data("usage: container-usb-broker --service <name> --container <id> --usb <vid[:pid]>...\n".utf8))
+    FileHandle.standardError.write(Data("usage: container-usb-broker --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid]>...\n".utf8))
     exit(64)
 }
 

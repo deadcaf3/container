@@ -116,6 +116,10 @@ codesign --force --sign "$USB_IDENTITY" --identifier "$USB_BUNDLE_ID" --entitlem
 PLUGIN_BIN="$STAGING_DIR/libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux"
 rm -f "$PLUGIN_BIN"
 ln -s ../../../usb/container-usb.app/Contents/MacOS/container-runtime-linux "$PLUGIN_BIN"
+# vmnet only lets the runtime join the network helper's NAT network when both are signed by the
+# same team; with an ad-hoc network helper every container has no route out.
+NETWORK_BIN="$STAGING_DIR/libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet"
+codesign --force --sign "$USB_IDENTITY" --prefix=com.apple.container. --entitlements "$ROOT/signing/container-network-vmnet.entitlements" "${SIGN_OPTS[@]}" "$NETWORK_BIN"
 
 codesign --force --sign "$USB_IDENTITY" --entitlements "$WORK/entitlements.plist" "${SIGN_OPTS[@]}" "$APP"
 codesign --verify --strict --verbose=1 "$APP"

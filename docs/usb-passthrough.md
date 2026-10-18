@@ -82,7 +82,8 @@ bin/container run -d --name probe --usb 1366 --kernel bin/vmlinux-arm64-usb usb-
 A **container** icon appears in the Dock while the container runs — that is the USB broker.
 The first time, open the **Virtual Machine Accessories** menu bar item and choose
 **Use with container** for the device. The choice persists, so later runs pick the device up
-without a click. Then:
+without a click. The menu bar item is only there while a `--usb` container runs; once every
+one has stopped it disappears until the next. Then:
 
 ```bash
 bin/container exec probe lsusb

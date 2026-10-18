@@ -849,32 +849,13 @@ public actor ContainersService {
 
     // MARK: - USB passthrough
 
-    /// The USB devices reported by every running container that was started with `--usb`, or
-    /// by the shared broker when no such container runs.
+    /// The USB devices the shared broker holds, and the container each is attached to.
     public func usbList() async throws -> [USBDeviceState] {
         self.log.debug("\(#function)")
-
-        let running = self.containers.values.filter {
-            $0.snapshot.status == .running && !$0.snapshot.configuration.usbDevices.isEmpty
+        guard let usbBroker else {
+            throw ContainerizationError(.unsupported, message: "USB passthrough is not configured")
         }
-        // Each running --usb container still has its own broker; ask the shared one only when
-        // it cannot compete with them for devices.
-        if running.isEmpty, let usbBroker {
-            return try await usbBroker.list()
-        }
-
-        var devices: [USBDeviceState] = []
-        for state in running.sorted(by: { $0.snapshot.id < $1.snapshot.id }) {
-            guard let client = state.client else {
-                continue
-            }
-            do {
-                devices += try await client.usbList()
-            } catch {
-                self.log.warning("usb: list failed", metadata: ["id": "\(state.snapshot.id)", "error": "\(error)"])
-            }
-        }
-        return devices
+        return try await usbBroker.list()
     }
 
     /// Request a USB device for a running container and attach it if it is assigned.
@@ -884,7 +865,7 @@ public actor ContainersService {
     public func usbAttach(id: String, filter: USBDeviceFilter) async throws -> String {
         self.log.debug("\(#function)")
         let client = try self.usbClient(id: id)
-        guard USBBrokerClient.isShared, let usbBroker,
+        guard let usbBroker,
             let device = Self.usbHandoffSource(for: filter, to: id, devices: try await usbBroker.list())
         else {
             return try await client.usbAttach(filter)

@@ -21,7 +21,7 @@ import ContainerizationError
 import Foundation
 import Logging
 
-/// The API server's connection to the shared USB broker (`container-usb.app --shared`).
+/// The API server's connection to the shared USB broker (`container-usb.app`).
 ///
 /// The broker is an app launched by LaunchServices, so it cannot own a launchd mach service.
 /// It checks an anonymous XPC endpoint in here instead (`XPCRoute.usbBrokerCheckIn`). This
@@ -29,9 +29,6 @@ import Logging
 /// requests start a single broker.
 public actor USBBrokerClient {
     public static let appPath = "libexec/container/usb/container-usb.app"
-    /// Whether runtimes register with the shared broker instead of launching their own.
-    /// False while the per-container broker is still in use.
-    static let isShared = false
     static let checkInTimeout: Duration = .seconds(20)
 
     private let appURL: URL
@@ -119,10 +116,10 @@ public actor USBBrokerClient {
         }
         log.info("usb: launching shared broker", metadata: ["app": "\(appURL.path)"])
         // `open` asks LaunchServices, so the broker runs as an ordinary app that AccessoryAccess
-        // offers devices to. -n: a new instance even while a per-container broker runs.
+        // offers devices to; this actor makes sure only one is started.
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        open.arguments = ["-n", "-g", appURL.path, "--args", "--shared"]
+        open.arguments = ["-g", appURL.path]
         try open.run()
         open.waitUntilExit()
         guard open.terminationStatus == 0 else {

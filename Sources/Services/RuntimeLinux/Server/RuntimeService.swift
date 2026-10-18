@@ -323,7 +323,7 @@ public actor RuntimeService {
                 // already assigned a moment to attach. Never fail here — a device assigned later
                 // from the menu extra is attached as it arrives.
                 if let usbPassthrough {
-                    try usbPassthrough.start()
+                    await usbPassthrough.start()
                     let wait = Duration.seconds(config.usbWaitSeconds ?? 5)
                     if await usbPassthrough.waitForRequested(timeout: wait) {
                         // The guest kernel enumerates a device shortly after it attaches; give it

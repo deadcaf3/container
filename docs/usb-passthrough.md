@@ -132,11 +132,12 @@ bin/container build -t usb-tools examples/usb
 bin/container run -d --name probe --usb 1366 --kernel bin/vmlinux-arm64-usb usb-tools sleep infinity
 ```
 
-A **container** icon appears in the Dock while the container runs — that is the USB broker.
-The first time, open the **Virtual Machine Accessories** menu bar item and choose
-**Use with container** for the device. The choice persists, so later runs pick the device up
-without a click. The menu bar item is only there while a `--usb` container runs; once every
-one has stopped it disappears until the next. Then:
+A **container** icon appears in the Dock while the USB broker runs. One broker serves every
+container; the first `--usb` container or `container usb ls` starts it. The first time, open
+the **Virtual Machine Accessories** menu bar item and choose **Use with container** for the
+device. The choice persists, so later runs pick the device up without a click. The menu bar
+item is only there while the broker runs; it quits 60 s after the last `--usb` container
+stopped. Then:
 
 ```bash
 bin/container exec probe lsusb
@@ -159,26 +160,28 @@ system_profiler SPUSBHostDataType | grep -E "^ +[^ ].*:$|Vendor ID|Product ID|Se
 
 The runtime waits briefly for devices before starting the container (`--usb-wait <seconds>`,
 default 5) and never fails if a device is missing: one assigned later is attached while the
-container runs. `container stop` detaches the device, quits the broker and returns the device
-to macOS.
+container runs. `container stop` detaches the device and returns it to the broker, which hands
+it to another running container whose filter matches; macOS gets it back when the broker quits.
 
 ## Devices as a resource
 
-While a `--usb` container runs, its devices can be listed and moved without restarting it:
+Devices can be listed, and moved between running containers without restarting them:
 
 ```bash
-bin/container usb ls                     # ID, serial, product and state of every device the broker has seen
-bin/container usb attach 1366 probe      # request a device for a running container, attach it if assigned
-bin/container usb detach 1366 [probe]    # return it to macOS; the container is optional when only one holds it
+bin/container usb ls                     # ID, serial, product and state of every device assigned to the broker
+bin/container usb attach 1366 probe      # request a device for a running container, moving it if another holds it
+bin/container usb detach 1366 [probe]    # return it to the broker; the container is optional when only one holds it
 ```
 
-`usb ls` shows each device as `attached to <container>`, `assigned` (chosen in the menu but not
-attached, usually because it matches no filter) or `unassigned` (withdrawn in the menu or
-unplugged). The device argument is the `--usb` selector. `attach` is a no-op with a message when
-the container already requests a filter covering the device; `detach` fails when no attached
-device matches. Both need a running container that was started with `--usb`, since only those
-VMs have a USB controller. Devices are known per container: a device appears once per `--usb`
-container whose broker was offered it.
+`usb ls` works with no container running, and shows each device as `attached to <container>` or
+`assigned` (chosen in the menu but attached to no container, usually because it matches no
+filter). A device withdrawn in the menu or unplugged drops out of the list. The device argument
+is the `--usb` selector. `attach` is a no-op with a message when the container already requests
+a filter covering the device; when another container holds the device, that container detaches
+it and the broker hands it over. `detach` fails when no attached device matches. Both need a
+running container that was started with `--usb`, since only those VMs have a USB controller. A
+newly assigned device goes to the earliest registered running container whose filter matches;
+a device a container gives up goes to the next match, never straight back.
 
 ## How it works
 
@@ -188,7 +191,8 @@ Linux kernel:
 1. The device is plugged into the Mac. macOS owns it.
 2. `container-usb.app`, the broker, registers with AccessoryAccess and the user assigns the
    device to it in the **Virtual Machine Accessories** menu (`AAUSBAccessory`, macOS 27).
-3. The broker forwards the accessory to `container-runtime-linux` over XPC.
+3. The broker forwards the accessory over XPC to the `container-runtime-linux` of the container
+   whose `--usb` filter matches.
 4. The runtime attaches it to the container's VM as a `VZUSBPassthroughDevice`
    (Virtualization framework).
 5. The guest kernel enumerates it and creates `/dev/bus/usb/<bus>/<dev>`, plus class nodes such
@@ -215,25 +219,27 @@ Three constraints on macOS 27 shape the design, each found by experiment:
 
 So a USB build stages one provisioned app, `container-usb.app`, containing two executables:
 
-- **`container-usb-broker`** (the app): launched by the runtime when a `--usb` container boots.
-  It holds the AccessoryAccess listener, receives devices assigned from the menu, and forwards
-  them to the runtime as XPC representations (`AAUSBAccessory` `createXPCRepresentation`) over
-  the runtime's mach service; the runtime attaches the ones matching `--usb`. It quits when the container stops.
-  It also runs a tiny idle VM with an XHCI controller: the assignment menu has only appeared
-  while the registering application was itself running one.
+- **`container-usb-broker`** (the app): one instance for every container, launched on demand by
+  the API server. It holds the AccessoryAccess listener and every device assigned from the
+  menu. Runtimes register their container, mach service, pid and `--usb` filters with it, and
+  it forwards each device as an XPC representation (`AAUSBAccessory`
+  `createXPCRepresentation`) to the runtime whose filter matches. It also runs a tiny idle VM
+  with an XHCI controller: the assignment menu has only appeared while the registering
+  application was itself running one.
 - **`container-runtime-linux`**: the unchanged runtime helper, signed with the app's identifier
   but no restricted entitlements. The runtime plugin's binary is a symlink to it, so launchd
   runs it from inside the bundle. It rebuilds each forwarded accessory, attaches it to the
   container's VM with `VZUSBPassthroughDevice` through a `VZInstanceExtension`, and detaches it
   on stop.
 
-The broker can also run as one shared instance for every container (`--shared`). An app
-launched by LaunchServices cannot check in a launchd mach service, and a broker that launchd
-starts is a background service that is never offered a device, so the shared broker has no
+An app launched by LaunchServices cannot check in a launchd mach service, and a broker that
+launchd starts is a background service that is never offered a device, so the broker has no
 fixed mach service of its own. It serves an anonymous XPC listener and checks its endpoint in
 with the API server (`com.apple.container.apiserver`), which launches the broker on demand and
-hands the endpoint to whoever needs it. The broker checks in again when the API server
-restarts and quits after 60 s without a request while no container holds a device.
+hands the endpoint to runtimes; a runtime then talks to the broker directly, so an API server
+restart does not interrupt it. The broker checks in again when the API server restarts, drops
+a registration when its runtime exits, and quits after 60 s without a request once no runtime
+is registered.
 
 The guest kernel needs USB host support built in; the container's `/dev` is a devtmpfs, so
 `/dev/bus/usb` nodes appear without udev.
@@ -241,7 +247,7 @@ The guest kernel needs USB host support built in; the container's `/dev` is a de
 ## Limitations
 
 - macOS 27+ only; one container per device.
-- The broker shows a Dock icon while a USB container runs.
+- The broker shows a Dock icon while it runs.
 - The broker registers for all devices (empty matching criteria), so the menu may offer
   unrelated devices; only those matching `--usb` are attached, and `run` names assigned devices
   that match no filter.

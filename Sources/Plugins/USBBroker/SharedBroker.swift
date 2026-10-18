@@ -41,7 +41,7 @@ let runtimeServiceKey = "usbRuntimeService"
 let runtimePIDKey = "usbRuntimePID"
 let registryIDKey = "usbRegistryID"
 
-/// One broker for every container (`--shared`).
+/// One broker for every container.
 ///
 /// An app launched by LaunchServices cannot check in a launchd mach service, and a broker that
 /// launchd starts is a background service that is never offered a device. So this broker serves
@@ -168,13 +168,14 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
             return
         }
         logger.info("holding \(String(format: "%04x:%04x", vendorID, productID), privacy: .public)")
-        offer(accessory.registryID)
+        Task { await offer(accessory.registryID) }
     }
 
     /// Sends a free device to the earliest registered runtime, other than `excluded`, whose
-    /// filters match it. The device counts as owned from the moment it is sent, so concurrent
-    /// offers never send it twice; it is free again if the runtime does not take it.
-    private func offer(_ registryID: UInt64, excluding excluded: String? = nil) {
+    /// filters match it, and returns once the runtime answered. The device counts as owned from
+    /// the moment it is sent, so concurrent offers never send it twice; it is free again if the
+    /// runtime does not take it.
+    private func offer(_ registryID: UInt64, excluding excluded: String? = nil) async {
         let target: (containerID: String, client: XPCClient, accessory: AAUSBAccessory, ids: String)? = lock.withLock {
             guard let device = held[registryID], device.owner == nil else {
                 return nil
@@ -199,18 +200,16 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         let message = XPCMessage(route: usbAccessoryRoute)
         message.set(key: "accessory", xpcDictionary: target.accessory.createXPCRepresentation())
         logger.info("forwarding \(ids, privacy: .public) to container \(target.containerID, privacy: .public)")
-        Task { [self] in
-            do {
-                let reply = try await target.client.send(message, responseTimeout: .seconds(30))
-                let result = reply.string(key: "result") ?? ""
-                logger.info("runtime \(target.containerID, privacy: .public): \(result, privacy: .public)")
-                if !result.hasPrefix("attaching") {
-                    free(registryID, heldBy: target.containerID)
-                }
-            } catch {
-                logger.error("forwarding \(ids, privacy: .public) failed: \(error, privacy: .public)")
+        do {
+            let reply = try await target.client.send(message, responseTimeout: .seconds(30))
+            let result = reply.string(key: "result") ?? ""
+            logger.info("runtime \(target.containerID, privacy: .public): \(result, privacy: .public)")
+            if !result.hasPrefix("attaching") {
                 free(registryID, heldBy: target.containerID)
             }
+        } catch {
+            logger.error("forwarding \(ids, privacy: .public) failed: \(error, privacy: .public)")
+            free(registryID, heldBy: target.containerID)
         }
     }
 
@@ -227,9 +226,11 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
     }
 
     /// Offers every free device to the registered runtimes.
-    private func offerFree(excluding excluded: String? = nil) {
+    private func offerFree() async {
         let free = lock.withLock { held.filter { $0.value.owner == nil }.map(\.key) }
-        free.forEach { offer($0, excluding: excluded) }
+        for registryID in free {
+            await offer(registryID)
+        }
     }
 
     // MARK: Routes
@@ -273,7 +274,7 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         let exit = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
         exit.setEventHandler { [self] in
             logger.info("runtime \(pid, privacy: .public) of container \(containerID, privacy: .public) exited")
-            drop(containerID, pid: pid)
+            Task { await drop(containerID, pid: pid) }
         }
         let previous = lock.withLock {
             lastRequest = .now
@@ -288,9 +289,9 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         logger.info("registered container \(containerID, privacy: .public): \(filters, privacy: .public)")
         // The runtime may have exited before the source was armed.
         if kill(pid, 0) != 0 && errno == ESRCH {
-            drop(containerID, pid: pid)
+            await drop(containerID, pid: pid)
         } else {
-            offerFree()
+            await offerFree()
         }
         return message.reply()
     }
@@ -299,7 +300,7 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
     private func unregister(_ message: XPCMessage) async throws -> XPCMessage {
         let containerID = try Self.containerID(message)
         lock.withLock { lastRequest = .now }
-        drop(containerID)
+        await drop(containerID)
         return message.reply()
     }
 
@@ -319,7 +320,8 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
             throw ContainerizationError(.notFound, message: "container \(containerID) is not registered with the USB broker")
         }
         logger.info("container \(containerID, privacy: .public) filters: \(filters, privacy: .public)")
-        offerFree()
+        // Replies once the runtime answered, so `usb attach` can report the devices sent.
+        await offerFree()
         return message.reply()
     }
 
@@ -331,14 +333,14 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         if free(registryID, heldBy: containerID) {
             logger.info("container \(containerID, privacy: .public) released \(String(format: "0x%llx", registryID), privacy: .public)")
             // Never straight back to the container that gave it up.
-            offer(registryID, excluding: containerID)
+            await offer(registryID, excluding: containerID)
         }
         return message.reply()
     }
 
     /// Removes the registration of `containerID` (only if it is still the one from `pid`, when
     /// given) and frees the devices it held.
-    private func drop(_ containerID: String, pid: pid_t? = nil) {
+    private func drop(_ containerID: String, pid: pid_t? = nil) async {
         let dropped = lock.withLock {
             guard let registration = registrations[containerID], pid == nil || registration.pid == pid else {
                 return false
@@ -352,7 +354,7 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         }
         if dropped {
             logger.info("unregistered container \(containerID, privacy: .public)")
-            offerFree()
+            await offerFree()
         }
     }
 

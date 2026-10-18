@@ -23,7 +23,7 @@ extension Application.USBCommand {
     public struct USBList: AsyncLoggableCommand {
         public static let configuration = CommandConfiguration(
             commandName: "list",
-            abstract: "List the USB devices known to running containers",
+            abstract: "List the USB devices assigned in the Virtual Machine Accessories menu",
             aliases: ["ls"]
         )
 

@@ -18,20 +18,13 @@
 ///
 /// AccessoryAccess only presents its assignment UI for an ordinary, Dock-visible application
 /// (AAUSBAccessoryManager.h). The runtime helper is started by launchd and is classified as a
-/// background service, so it can never be offered a device. The runtime launches this app
-/// instead; it receives devices assigned from the Virtual Machine Accessories menu and forwards
-/// them to the runtime as XPC representations, and the runtime attaches the ones matching
-/// `--usb` to the container's VM.
-///
-///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...
-///   container-usb-broker --shared
-///
-/// `--shared` runs one broker for every container (`SharedBroker`).
+/// background service, so it can never be offered a device. This app receives devices assigned
+/// from the Virtual Machine Accessories menu instead and forwards them to the runtimes of the
+/// containers whose `--usb` filters match, as XPC representations; each runtime attaches them to
+/// its container's VM. One broker serves every container (`SharedBroker`); the API server
+/// launches it on demand.
 
-@preconcurrency import AccessoryAccess
 import AppKit
-import ContainerResource
-import ContainerXPC
 import Foundation
 @preconcurrency import Virtualization
 import os
@@ -42,140 +35,19 @@ let logger = Logger(subsystem: "com.apple.container", category: "USBBroker")
 let usbAccessoryRoute = "com.apple.container.runtime/usbAccessory"
 let usbAccessoryWithdrawnRoute = "com.apple.container.runtime/usbAccessoryWithdrawn"
 
-struct BrokerArguments: Sendable {
-    var service: String
-    var containerID: String
-    var runtimePID: pid_t
-    var filters: [USBDeviceFilter]
-
-    static func parse(_ arguments: [String]) -> BrokerArguments? {
-        var service: String?
-        var containerID: String?
-        var runtimePID: pid_t?
-        var filters: [USBDeviceFilter] = []
-        var iterator = arguments.makeIterator()
-        while let argument = iterator.next() {
-            switch argument {
-            case "--service": service = iterator.next()
-            case "--container": containerID = iterator.next()
-            case "--runtime-pid": runtimePID = iterator.next().flatMap { pid_t($0) }
-            case "--usb":
-                guard let value = iterator.next(), let filter = USBDeviceFilter(parsing: value) else {
-                    return nil
-                }
-                filters.append(filter)
-            default: continue  // LaunchServices may add its own arguments.
-            }
-        }
-        guard let service, let containerID, let runtimePID, runtimePID > 0, !filters.isEmpty else {
-            return nil
-        }
-        return BrokerArguments(service: service, containerID: containerID, runtimePID: runtimePID, filters: filters)
-    }
-}
-
-/// Holds the AccessoryAccess listener and forwards matching accessories to the runtime.
-@available(macOS 27, *)
-final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
-    private let arguments: BrokerArguments
-    private let client: XPCClient
-    private let lock = NSLock()
-    private var forwarded: Set<UInt64> = []
-
-    init(arguments: BrokerArguments) {
-        self.arguments = arguments
-        self.client = XPCClient(service: arguments.service)
-    }
-
-    func register() {
-        // Empty criteria: the one configuration that has produced the assignment menu.
-        // FB24018643 limits real criteria to vendor IDs anyway; --usb is applied on arrival.
-        AAUSBAccessoryManager.shared.registerListener(self, matchingCriteria: []) { [self] connected, error in
-            if let error {
-                logger.error("registerListener failed: \(error, privacy: .public)")
-                return
-            }
-            logger.info("listener registered; \(connected.count) device(s) already assigned")
-            connected.forEach(forward)
-        }
-    }
-
-    func usbAccessoryDidConnect(_ usbAccessory: AAUSBAccessory) {
-        forward(usbAccessory)
-    }
-
-    func usbAccessoryDidDisconnect(_ usbAccessory: AAUSBAccessory) {
-        _ = lock.withLock { forwarded.remove(usbAccessory.registryID) }
-        logger.info("device withdrawn: \(String(format: "0x%llx", usbAccessory.registryID), privacy: .public)")
-        // Tell the runtime so `container usb ls` shows the device as unassigned.
-        let message = XPCMessage(route: usbAccessoryWithdrawnRoute)
-        message.set(key: "usbRegistryID", value: usbAccessory.registryID)
-        Task { [self] in
-            _ = try? await client.send(message, responseTimeout: .seconds(10))
-        }
-    }
-
-    private func forward(_ accessory: AAUSBAccessory) {
-        let bytes = [UInt8](accessory.deviceDescriptorData)
-        guard bytes.count >= 12 else {
-            return
-        }
-        let vendorID = UInt16(bytes[8]) | UInt16(bytes[9]) << 8
-        let productID = UInt16(bytes[10]) | UInt16(bytes[11]) << 8
-        let ids = String(format: "%04x:%04x", vendorID, productID)
-        // Forward every assigned device: the runtime applies --usb, and reports assigned devices
-        // that match no filter to the user.
-        guard lock.withLock({ forwarded.insert(accessory.registryID).inserted }) else {
-            return
-        }
-
-        let message = XPCMessage(route: usbAccessoryRoute)
-        message.set(key: "accessory", xpcDictionary: accessory.createXPCRepresentation())
-        logger.info("forwarding \(ids, privacy: .public) to container \(self.arguments.containerID, privacy: .public)")
-        Task { [self] in
-            do {
-                let reply = try await client.send(message, responseTimeout: .seconds(30))
-                logger.info("runtime: \(reply.string(key: "result") ?? "accepted", privacy: .public)")
-            } catch {
-                logger.error("forwarding \(ids, privacy: .public) failed: \(error, privacy: .public)")
-                _ = lock.withLock { forwarded.remove(accessory.registryID) }
-            }
-        }
-    }
-}
-
 @available(macOS 27, *)
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Nil for the shared broker.
-    private let arguments: BrokerArguments?
-    private var broker: Broker?
-    private var sharedBroker: SharedBroker?
+    private var broker: SharedBroker?
     private var virtualMachine: VZVirtualMachine?
     private var vmDirectory: URL?
-    private var runtimeExit: DispatchSourceProcess?
-
-    init(arguments: BrokerArguments?) {
-        self.arguments = arguments
-    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let arguments else {
-            logger.info("shared broker")
-            startPlaceholderVM()
-            let broker = SharedBroker()
-            sharedBroker = broker
-            broker.start()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                broker.register()
-            }
-            return
-        }
-        logger.info("broker for container \(arguments.containerID, privacy: .public): \(arguments.filters, privacy: .public)")
-        watchRuntime(pid: arguments.runtimePID)
+        logger.info("shared broker")
         startPlaceholderVM()
-        let broker = Broker(arguments: arguments)
+        let broker = SharedBroker()
         self.broker = broker
+        broker.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             broker.register()
         }
@@ -187,29 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Quit when the runtime exits, so a crashed or stopped container never leaves a broker
-    /// behind, even if no device was ever forwarded.
-    private func watchRuntime(pid: pid_t) {
-        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
-        source.setEventHandler {
-            logger.info("runtime \(pid, privacy: .public) exited; quitting")
-            NSApplication.shared.terminate(nil)
-        }
-        source.resume()
-        runtimeExit = source
-        // The runtime may have exited before the source was armed.
-        if kill(pid, 0) != 0 && errno == ESRCH {
-            logger.info("runtime \(pid, privacy: .public) already gone; quitting")
-            NSApplication.shared.terminate(nil)
-        }
-    }
-
     /// A minimal VM with an XHCI controller in this process. The assignment menu has only
     /// appeared when the registering application was itself running such a VM.
     private func startPlaceholderVM() {
         do {
             let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("container-usb-broker-\(arguments?.containerID ?? "shared")", isDirectory: true)
+                .appendingPathComponent("container-usb-broker", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             vmDirectory = dir
             let diskURL = dir.appendingPathComponent("scratch.img")
@@ -244,27 +99,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let shared = CommandLine.arguments.contains("--shared")
-let arguments = BrokerArguments.parse(Array(CommandLine.arguments.dropFirst()))
-guard shared || arguments != nil else {
-    FileHandle.standardError.write(
-        Data("usage: container-usb-broker --shared | --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...\n".utf8))
-    exit(64)
-}
-
 @available(macOS 27, *)
 @MainActor
-func runBroker(arguments: BrokerArguments?) {
+func runBroker() {
     let application = NSApplication.shared
     // NSApplication holds its delegate weakly; this binding keeps it alive for run().
-    let delegate = AppDelegate(arguments: arguments)
+    let delegate = AppDelegate()
     application.delegate = delegate
     application.setActivationPolicy(.regular)
     application.run()
 }
 
 if #available(macOS 27, *) {
-    runBroker(arguments: shared ? nil : arguments)
+    runBroker()
 } else {
     FileHandle.standardError.write(Data("container-usb-broker requires macOS 27 or newer\n".utf8))
     exit(1)

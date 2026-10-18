@@ -29,6 +29,9 @@ import Logging
 /// requests start a single broker.
 public actor USBBrokerClient {
     public static let appPath = "libexec/container/usb/container-usb.app"
+    /// Whether runtimes register with the shared broker instead of launching their own.
+    /// False while the per-container broker is still in use.
+    static let isShared = false
     static let checkInTimeout: Duration = .seconds(20)
 
     private let appURL: URL

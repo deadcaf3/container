@@ -878,9 +878,44 @@ public actor ContainersService {
     }
 
     /// Request a USB device for a running container and attach it if it is assigned.
+    ///
+    /// With the shared broker, a matching device attached to another container moves here: this
+    /// container requests it first, then the holder detaches it and the broker hands it over.
     public func usbAttach(id: String, filter: USBDeviceFilter) async throws -> String {
         self.log.debug("\(#function)")
-        return try await self.usbClient(id: id).usbAttach(filter)
+        let client = try self.usbClient(id: id)
+        guard USBBrokerClient.isShared, let usbBroker,
+            let device = Self.usbHandoffSource(for: filter, to: id, devices: try await usbBroker.list())
+        else {
+            return try await client.usbAttach(filter)
+        }
+
+        let holder = try self.usbClient(id: device.containerID)
+        let result = try await client.usbAttach(filter)
+        let exact = USBDeviceFilter(vendorID: device.vendorID, productID: device.productID, serialNumber: device.serialNumber)
+        self.log.info("usb: moving device", metadata: ["ids": "\(device.ids)", "from": "\(device.containerID)", "to": "\(id)"])
+        _ = try await holder.usbDetach(exact)
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            let devices = try await usbBroker.list()
+            if devices.contains(where: { $0.registryID == device.registryID && $0.status == .attached && $0.containerID == id }) {
+                return "moved \(device.ids) from \(device.containerID) to \(id)"
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        return "\(result); detached \(device.ids) from \(device.containerID), but it has not attached to \(id) yet, see `container system logs`"
+    }
+
+    /// The device to move to container `target` for `filter`: one attached to another container,
+    /// and only when no matching device is free (the broker hands a free one over by itself) and
+    /// `target` holds none yet.
+    static func usbHandoffSource(for filter: USBDeviceFilter, to target: String, devices: [USBDeviceState]) -> USBDeviceState? {
+        let matching = devices.filter { $0.matches(filter) }
+        guard !matching.contains(where: { $0.status == .assigned || ($0.status == .attached && $0.containerID == target) }) else {
+            return nil
+        }
+        return matching.filter { $0.status == .attached }.min { ($0.containerID, $0.registryID) < ($1.containerID, $1.registryID) }
     }
 
     /// Detach a USB device from a running container.

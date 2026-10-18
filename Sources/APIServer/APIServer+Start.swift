@@ -314,6 +314,7 @@ extension APIServer {
             routes[XPCRoute.containerUSBAttach] = XPCServer.route(harness.usbAttach)
             routes[XPCRoute.containerUSBDetach] = XPCServer.route(harness.usbDetach)
             routes[XPCRoute.usbBrokerCheckIn] = XPCServer.route { try await usbBroker.checkIn($0) }
+            routes[XPCRoute.usbBrokerEndpoint] = XPCServer.route { try await usbBroker.endpoint($0) }
 
             return service
         }

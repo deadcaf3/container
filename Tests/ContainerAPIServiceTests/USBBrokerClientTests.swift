@@ -57,6 +57,16 @@ struct USBBrokerClientTests {
         _ = try await brokerSide.send(checkIn, responseTimeout: .seconds(10))
 
         #expect(try await client.list() == [device])
+
+        // A runtime asking for the endpoint gets one that reaches the same broker.
+        let apiServerForRuntime = Self.serve([XPCRoute.usbBrokerEndpoint.rawValue: XPCServer.route { try await client.endpoint($0) }])
+        defer { apiServerForRuntime.task.cancel() }
+        let runtimeSide = XPCClient(connection: xpc_connection_create_from_endpoint(apiServerForRuntime.endpoint), label: "test-runtime")
+        let reply = try await runtimeSide.send(XPCMessage(route: XPCRoute.usbBrokerEndpoint.rawValue), responseTimeout: .seconds(10))
+        let endpoint = try #require(reply.endpoint(key: XPCKeys.usbBrokerEndpoint.rawValue))
+        let direct = XPCClient(connection: xpc_connection_create_from_endpoint(endpoint), label: "test-broker")
+        let listed = try await direct.send(XPCMessage(route: USBBrokerRoutes.list.rawValue), responseTimeout: .seconds(10))
+        #expect(listed.dataNoCopy(key: XPCKeys.usbDevices.rawValue) != nil)
     }
 
     @Test func checkInWithoutEndpointIsRefused() async throws {

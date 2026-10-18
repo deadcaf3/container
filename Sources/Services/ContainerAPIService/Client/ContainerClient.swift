@@ -407,6 +407,15 @@ public struct ContainerClient: Sendable {
         try await usbRequest(.containerUSBDetach, id: id, filter: filter)
     }
 
+    /// The shared USB broker's endpoint; the API server starts the broker if it is not running.
+    public func usbBrokerEndpoint() async throws -> xpc_endpoint_t {
+        let response = try await xpcClient.send(XPCMessage(route: .usbBrokerEndpoint))
+        guard let endpoint = response.endpoint(key: .usbBrokerEndpoint) else {
+            throw ContainerizationError(.internalError, message: "no USB broker endpoint returned")
+        }
+        return endpoint
+    }
+
     private func usbRequest(_ route: XPCRoute, id: String, filter: USBDeviceFilter) async throws -> String {
         let request = XPCMessage(route: route)
         request.set(key: .id, value: id)

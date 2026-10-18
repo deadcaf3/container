@@ -19,4 +19,13 @@
 public enum USBBrokerRoutes: String {
     /// Every accessory the broker holds, as a JSON `[USBDeviceState]` under `usbDevices`.
     case list = "com.apple.container.usb-broker/list"
+    /// A runtime registers its container (`id`), mach service, pid and filters; the broker
+    /// sends it every free held device that matches, and watches the pid.
+    case register = "com.apple.container.usb-broker/register"
+    /// A runtime drops its registration; the devices it held become free.
+    case unregister = "com.apple.container.usb-broker/unregister"
+    /// A runtime replaces its filters (`usbFilters`).
+    case updateFilters = "com.apple.container.usb-broker/updateFilters"
+    /// A runtime gave up the device `usbRegistryID`; the broker offers it to other containers.
+    case released = "com.apple.container.usb-broker/released"
 }

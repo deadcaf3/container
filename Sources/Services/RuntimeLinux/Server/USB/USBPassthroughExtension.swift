@@ -72,6 +72,8 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private var instance: VZVirtualMachineInstance?
     private var started = false
     private var broker: NSRunningApplication?
+    /// The registration with the shared broker, when this container uses it instead of `broker`.
+    private var brokerSession: USBBrokerSession?
     private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16, serialNumber: String?)] = [:]
     private var inFlight: Set<UInt64> = []
     private var unrequested: Set<String> = []
@@ -256,6 +258,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             return "\(containerID) already requests \(existing); nothing to do"
         case .attach(let candidates):
             log.info("usb: filter added", metadata: ["filter": "\(filter)", "candidates": "\(candidates.count)"])
+            await updateBrokerFilters()
             var attachedIDs: [String] = []
             var failed: [String] = []
             for accessory in candidates {
@@ -322,6 +325,12 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
                 log.info("usb: detached by request, device returned to macOS", metadata: ["registryID": "\(Self.hex(target.registryID))", "ids": "\(target.ids)"])
             }
         }
+        await updateBrokerFilters()
+        if let session = lock.withLock({ brokerSession }) {
+            for target in targets {
+                await session.released(registryID: target.registryID)
+            }
+        }
         guard errors.isEmpty else {
             throw ContainerizationError(.internalError, message: "detach failed for \(errors.joined(separator: "; "))")
         }
@@ -368,19 +377,21 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     }
 
     func teardown() async {
-        let (instance, broker, waiting) = lock.withLock {
+        let (instance, broker, session, waiting) = lock.withLock {
             defer {
                 started = false
                 self.broker = nil
+                brokerSession = nil
                 waiters.removeAll()
             }
-            return (self.instance, self.broker, Array(waiters.values))
+            return (self.instance, self.broker, brokerSession, Array(waiters.values))
         }
         waiting.forEach { $0.resume(returning: false) }
 
         if let instance {
             await detachAll(from: instance)
         }
+        await session?.unregister()
         if let broker {
             broker.terminate()
             log.info("usb: broker terminated", metadata: ["pid": "\(broker.processIdentifier)"])
@@ -453,23 +464,27 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private func finishAttach(
         _ registryID: UInt64, _ device: VZUSBPassthroughDevice?, _ vendorID: UInt16, _ productID: UInt16, _ serialNumber: String?, error: String?
     ) {
-        let ready: [CheckedContinuation<Bool, Never>] = lock.withLock {
+        let (ready, session): ([CheckedContinuation<Bool, Never>], USBBrokerSession?) = lock.withLock {
             inFlight.remove(registryID)
             guard let device else {
-                return []
+                return ([], brokerSession)
             }
             attached[registryID] = (device, vendorID, productID, serialNumber)
             guard isSatisfied() else {
-                return []
+                return ([], nil)
             }
             defer { waiters.removeAll() }
-            return Array(waiters.values)
+            return (Array(waiters.values), nil)
         }
         let ids = String(format: "%04x:%04x", vendorID, productID)
         let serial = serialNumber ?? ""
         if let error {
             // Most often another container already holds the device.
             log.warning("usb: attach failed", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)", "serial": "\(serial)", "error": "\(error)"])
+            // The shared broker may hand it to another container.
+            if let session {
+                Task { await session.released(registryID: registryID) }
+            }
         } else {
             log.info("usb: attached, device is now captured by the VM", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)", "serial": "\(serial)"])
         }
@@ -505,6 +520,12 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     }
 
     // MARK: Helpers
+
+    /// Sends the current filters to the shared broker, if this container uses it.
+    private func updateBrokerFilters() async {
+        let (session, filters) = lock.withLock { (brokerSession, filters) }
+        await session?.updateFilters(filters)
+    }
 
     /// Must be called with `lock` held.
     private func isSatisfied() -> Bool {

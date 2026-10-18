@@ -152,6 +152,12 @@ public enum XPCKeys: String {
     case usbResult
     /// The shared USB broker's XPC endpoint.
     case usbBrokerEndpoint
+    /// Shared USB broker registration: a JSON `[USBDeviceFilter]`, the runtime's mach service
+    /// and pid, and a device registry ID.
+    case usbFilters
+    case usbRuntimeService
+    case usbRuntimePID
+    case usbRegistryID
 }
 
 public enum XPCRoute: String {
@@ -180,6 +186,8 @@ public enum XPCRoute: String {
     case containerUSBDetach
     /// The shared USB broker checks in its endpoint.
     case usbBrokerCheckIn
+    /// A runtime asks for the shared USB broker's endpoint, starting the broker if needed.
+    case usbBrokerEndpoint
 
     case pluginLoad
     case pluginGet

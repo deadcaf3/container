@@ -34,6 +34,8 @@ public actor USBBrokerClient {
     private let appURL: URL
     private let log: Logger
     private var client: XPCClient?
+    /// The endpoint `client` connects to, handed to runtimes.
+    private var endpoint: xpc_endpoint_t?
     private var launch: Task<XPCClient, Error>?
     private var waiters: [UUID: CheckedContinuation<XPCClient?, Never>] = [:]
 
@@ -49,6 +51,7 @@ public actor USBBrokerClient {
         }
         let client = XPCClient(connection: xpc_connection_create_from_endpoint(endpoint), label: "container-usb-broker")
         self.client = client
+        self.endpoint = endpoint
         log.info("usb: broker checked in")
         let waiting = waiters.values
         waiters.removeAll()
@@ -63,6 +66,18 @@ public actor USBBrokerClient {
             throw ContainerizationError(.internalError, message: "the USB broker returned no device data")
         }
         return try JSONDecoder().decode([USBDeviceState].self, from: data)
+    }
+
+    /// Handles `XPCRoute.usbBrokerEndpoint`: replies with the endpoint of a running broker.
+    public func endpoint(_ message: XPCMessage) async throws -> XPCMessage {
+        // A list round trip proves the broker is still there, and starts a new one if it quit.
+        _ = try await list()
+        guard let endpoint else {
+            throw ContainerizationError(.invalidState, message: "the USB broker has no endpoint")
+        }
+        let reply = message.reply()
+        reply.set(key: XPCKeys.usbBrokerEndpoint.rawValue, value: endpoint)
+        return reply
     }
 
     /// Sends `message` to the broker, starting it first if needed. A broker that quit since it

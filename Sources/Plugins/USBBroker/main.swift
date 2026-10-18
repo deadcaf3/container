@@ -30,8 +30,8 @@ import AppKit
 import ContainerResource
 import ContainerXPC
 import Foundation
-import os
 @preconcurrency import Virtualization
+import os
 
 let logger = Logger(subsystem: "com.apple.container", category: "USBBroker")
 

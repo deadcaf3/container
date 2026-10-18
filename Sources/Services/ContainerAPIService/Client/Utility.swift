@@ -266,7 +266,8 @@ public struct Utility {
 
         config.usbDevices = try management.usb.map { raw in
             guard let filter = USBDeviceFilter(parsing: raw) else {
-                throw ContainerizationError(.invalidArgument, message: "invalid --usb value '\(raw)': expected hex vid or vid:pid, e.g. 1366 or 1366:0101")
+                throw ContainerizationError(
+                    .invalidArgument, message: "invalid --usb value '\(raw)': expected hex vid, vid:pid or vid:pid:serial, e.g. 1366, 1366:0101 or 1366:0101:000123456789")
             }
             return filter
         }

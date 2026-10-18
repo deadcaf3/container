@@ -143,13 +143,18 @@ bin/container exec probe lsusb
 bin/container exec probe probe-rs list
 ```
 
-`--usb` takes a hex vendor ID (`1366`) or vendor and product (`1366:0105`) and can be repeated.
-A vendor ID alone is the safer choice: product IDs differ between models of the same probe
-(SEGGER J-Links report `0101`, `0105`, `1061` and others), and only devices you assigned in the
-menu are attached either way. To look up a device's IDs:
+`--usb` takes a hex vendor ID (`1366`), vendor and product (`1366:0105`) or vendor, product and
+serial number (`1366:0105:000123456789`) and can be repeated. A vendor ID alone is the safer
+choice: product IDs differ between models of the same probe (SEGGER J-Links report `0101`,
+`0105`, `1061` and others), and only devices you assigned in the menu are attached either way.
+Add the serial when two devices of the same model are plugged in and each container must get
+its own; it is matched exactly, case-sensitive, and may itself contain colons (the ESP32
+USB-JTAG serial is its MAC address). An empty serial (`1366:0105:`) matches a device that
+reports none. Some devices report a placeholder (hubs show `000000000`), so the serial only
+helps when it is unique. To look up a device's IDs and serial:
 
 ```bash
-system_profiler SPUSBHostDataType | grep -E "^ +[^ ].*:$|Vendor ID|Product ID"
+system_profiler SPUSBHostDataType | grep -E "^ +[^ ].*:$|Vendor ID|Product ID|Serial Number"
 ```
 
 The runtime waits briefly for devices before starting the container (`--usb-wait <seconds>`,

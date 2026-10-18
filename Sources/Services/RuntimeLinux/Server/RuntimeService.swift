@@ -336,7 +336,7 @@ public actor RuntimeService {
                         let unrequested = usbPassthrough.unrequestedDevices()
                         if !unrequested.isEmpty {
                             message +=
-                                " Assigned but not matching --usb: \(unrequested.joined(separator: ", ")); check the IDs, or pass just the vendor ID."
+                                " Assigned but not matching --usb: \(unrequested.joined(separator: ", ")) (vid:pid[:serial]); check the IDs, pass just the vendor ID, or add the serial to pick one device."
                         }
                         warning = message
                         self.log.warning(

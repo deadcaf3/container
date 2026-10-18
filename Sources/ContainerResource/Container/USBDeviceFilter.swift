@@ -17,37 +17,51 @@
 import Foundation
 
 /// A physical USB device to pass through to the container's VM, matched by vendor and
-/// optionally product ID.
+/// optionally product ID and serial number.
 public struct USBDeviceFilter: Sendable, Codable, Equatable, CustomStringConvertible {
     public var vendorID: UInt16
     public var productID: UInt16?
+    /// Exact, case-sensitive serial number to match. An empty string matches devices that
+    /// report no serial number. Requires `productID`.
+    public var serialNumber: String?
 
-    public init(vendorID: UInt16, productID: UInt16? = nil) {
+    public init(vendorID: UInt16, productID: UInt16? = nil, serialNumber: String? = nil) {
         self.vendorID = vendorID
         self.productID = productID
+        self.serialNumber = serialNumber
     }
 
-    /// Parses `vid` or `vid:pid`, each 1–4 hex digits with an optional `0x` prefix.
+    /// Parses `vid`, `vid:pid` or `vid:pid:serial`. IDs are 1–4 hex digits with an optional
+    /// `0x` prefix; the serial is everything after the second colon and may itself contain
+    /// colons, so `vid::serial` is rejected rather than read as a product ID.
     public init?(parsing text: String) {
-        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 1 || parts.count == 2,
+        let parts = text.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count),
             let vendorID = Self.hex(parts[0])
         else {
             return nil
         }
-        if parts.count == 2 {
-            guard let productID = Self.hex(parts[1]) else {
+        var productID: UInt16?
+        if parts.count >= 2 {
+            guard let parsed = Self.hex(parts[1]) else {
                 return nil
             }
-            self.init(vendorID: vendorID, productID: productID)
-        } else {
-            self.init(vendorID: vendorID)
+            productID = parsed
         }
+        let serialNumber = parts.count == 3 ? String(parts[2]) : nil
+        self.init(vendorID: vendorID, productID: productID, serialNumber: serialNumber)
     }
 
-    /// Whether a device with these IDs satisfies the filter.
-    public func matches(vendorID: UInt16, productID: UInt16) -> Bool {
-        vendorID == self.vendorID && (self.productID == nil || productID == self.productID)
+    /// Whether a device with these IDs and serial number satisfies the filter. Pass `nil`
+    /// for a device that reports no serial number.
+    public func matches(vendorID: UInt16, productID: UInt16, serialNumber: String?) -> Bool {
+        guard vendorID == self.vendorID, self.productID == nil || productID == self.productID else {
+            return false
+        }
+        guard let wanted = self.serialNumber else {
+            return true
+        }
+        return (serialNumber ?? "") == wanted
     }
 
     public var description: String {
@@ -55,7 +69,11 @@ public struct USBDeviceFilter: Sendable, Codable, Equatable, CustomStringConvert
         guard let productID else {
             return vendor
         }
-        return vendor + ":" + String(format: "%04x", productID)
+        let ids = vendor + ":" + String(format: "%04x", productID)
+        guard let serialNumber else {
+            return ids
+        }
+        return ids + ":" + serialNumber
     }
 
     private static func hex(_ text: Substring) -> UInt16? {

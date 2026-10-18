@@ -380,8 +380,8 @@ public struct Flags {
         @Option(
             name: .customLong("usb"),
             help: .init(
-                "[EXPERIMENTAL] Pass a physical USB device through to the container, matched by hex vendor and optional product ID (repeatable; requires macOS 27)",
-                valueName: "vid[:pid]"
+                "[EXPERIMENTAL] Pass a physical USB device through to the container, matched by hex vendor ID, optional product ID and optional exact serial number (repeatable; requires macOS 27)",
+                valueName: "vid[:pid[:serial]]"
             )
         )
         public var usb: [String] = []

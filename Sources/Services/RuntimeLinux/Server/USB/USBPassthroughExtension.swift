@@ -21,6 +21,7 @@ import Containerization
 import ContainerizationError
 import ContainerizationExtras
 import Foundation
+import IOKit
 import Logging
 @preconcurrency import Virtualization
 
@@ -33,7 +34,8 @@ protocol USBPassthroughControl: Sendable {
     func waitForRequested(timeout: Duration) async -> Bool
     /// Attaches an accessory forwarded by the broker. Returns a short status for the broker.
     func receive(xpcRepresentation: xpc_object_t) -> String
-    /// IDs (`vvvv:pppp`) of devices assigned in the menu that match no `--usb` filter.
+    /// IDs (`vvvv:pppp`, or `vvvv:pppp:serial` when the device reports a serial number) of
+    /// devices assigned in the menu that match no `--usb` filter.
     func unrequestedDevices() -> [String]
     /// Detaches every passed-through device and quits the broker.
     func teardown() async
@@ -60,7 +62,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private var instance: VZVirtualMachineInstance?
     private var started = false
     private var broker: NSRunningApplication?
-    private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16)] = [:]
+    private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16, serialNumber: String?)] = [:]
     private var inFlight: Set<UInt64> = []
     private var unrequested: Set<String> = []
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
@@ -234,9 +236,11 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             return "rejected: unparseable device descriptor"
         }
         let ids = String(format: "%04x:%04x", vendorID, productID)
-        guard filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID) }) else {
-            log.info("usb: accessory does not match --usb, ignoring", metadata: ["registryID": "\(registryID)", "ids": "\(ids)"])
-            _ = lock.withLock { unrequested.insert(ids) }
+        let serialNumber = Self.serialNumber(registryID: accessory.registryID)
+        let serial = serialNumber ?? ""
+        guard filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID, serialNumber: serialNumber) }) else {
+            log.info("usb: accessory does not match --usb, ignoring", metadata: ["registryID": "\(registryID)", "ids": "\(ids)", "serial": "\(serial)"])
+            _ = lock.withLock { unrequested.insert(serial.isEmpty ? ids : ids + ":" + serial) }
             return "ignored: \(ids) not requested"
         }
 
@@ -251,33 +255,35 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             return "ignored: \(ids) already attached or VM not ready"
         }
 
-        log.info("usb: attaching", metadata: ["registryID": "\(registryID)", "ids": "\(ids)"])
+        log.info("usb: attaching", metadata: ["registryID": "\(registryID)", "ids": "\(ids)", "serial": "\(serial)"])
         instance.vmQueue.async { [self] in
             guard let controller = instance.vzVirtualMachine.usbControllers.first else {
-                finishAttach(accessory.registryID, nil, vendorID, productID, error: "the VM has no USB controller")
+                finishAttach(accessory.registryID, nil, vendorID, productID, serialNumber, error: "the VM has no USB controller")
                 return
             }
             let device: VZUSBPassthroughDevice
             do {
                 device = try VZUSBPassthroughDevice(configuration: VZUSBPassthroughDeviceConfiguration(device: accessory))
             } catch {
-                finishAttach(accessory.registryID, nil, vendorID, productID, error: "\(error)")
+                finishAttach(accessory.registryID, nil, vendorID, productID, serialNumber, error: "\(error)")
                 return
             }
             controller.attach(device: device) { error in
-                self.finishAttach(accessory.registryID, error == nil ? device : nil, vendorID, productID, error: error.map { "\($0)" })
+                self.finishAttach(accessory.registryID, error == nil ? device : nil, vendorID, productID, serialNumber, error: error.map { "\($0)" })
             }
         }
         return "attaching \(ids)"
     }
 
-    private func finishAttach(_ registryID: UInt64, _ device: VZUSBPassthroughDevice?, _ vendorID: UInt16, _ productID: UInt16, error: String?) {
+    private func finishAttach(
+        _ registryID: UInt64, _ device: VZUSBPassthroughDevice?, _ vendorID: UInt16, _ productID: UInt16, _ serialNumber: String?, error: String?
+    ) {
         let ready: [CheckedContinuation<Bool, Never>] = lock.withLock {
             inFlight.remove(registryID)
             guard let device else {
                 return []
             }
-            attached[registryID] = (device, vendorID, productID)
+            attached[registryID] = (device, vendorID, productID, serialNumber)
             guard isSatisfied() else {
                 return []
             }
@@ -285,11 +291,12 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             return Array(waiters.values)
         }
         let ids = String(format: "%04x:%04x", vendorID, productID)
+        let serial = serialNumber ?? ""
         if let error {
             // Most often another container already holds the device.
-            log.warning("usb: attach failed", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)", "error": "\(error)"])
+            log.warning("usb: attach failed", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)", "serial": "\(serial)", "error": "\(error)"])
         } else {
-            log.info("usb: attached, device is now captured by the VM", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)"])
+            log.info("usb: attached, device is now captured by the VM", metadata: ["registryID": "\(Self.hex(registryID))", "ids": "\(ids)", "serial": "\(serial)"])
         }
         ready.forEach { $0.resume(returning: true) }
     }
@@ -327,8 +334,23 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     /// Must be called with `lock` held.
     private func isSatisfied() -> Bool {
         filters.allSatisfy { filter in
-            attached.values.contains { filter.matches(vendorID: $0.vendorID, productID: $0.productID) }
+            attached.values.contains { filter.matches(vendorID: $0.vendorID, productID: $0.productID, serialNumber: $0.serialNumber) }
         }
+    }
+
+    /// The device's "USB Serial Number" from the IORegistry, or nil when the device reports
+    /// none or has already gone. Reading the property needs no open of the device.
+    private static func serialNumber(registryID: UInt64) -> String? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(registryID))
+        guard service != IO_OBJECT_NULL else {
+            return nil
+        }
+        defer { IOObjectRelease(service) }
+        let property = IORegistryEntryCreateCFProperty(service, "USB Serial Number" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+        guard let serial = property as? String, !serial.isEmpty else {
+            return nil
+        }
+        return serial
     }
 
     private static func ids(from descriptor: Data) -> (UInt16, UInt16)? {

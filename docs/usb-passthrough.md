@@ -115,8 +115,8 @@ So a USB build stages one provisioned app, `container-usb.app`, containing two e
 
 - **`container-usb-broker`** (the app): launched by the runtime when a `--usb` container boots.
   It holds the AccessoryAccess listener, receives devices assigned from the menu, and forwards
-  the ones matching `--usb` to the runtime as XPC representations (`AAUSBAccessory`
-  `createXPCRepresentation`) over the runtime's mach service. It quits when the container stops.
+  them to the runtime as XPC representations (`AAUSBAccessory` `createXPCRepresentation`) over
+  the runtime's mach service; the runtime attaches the ones matching `--usb`. It quits when the container stops.
   It also runs a tiny idle VM with an XHCI controller: the assignment menu has only appeared
   while the registering application was itself running one.
 - **`container-runtime-linux`**: the unchanged runtime helper, signed with the app's identifier
@@ -133,7 +133,8 @@ The guest kernel needs USB host support built in; the container's `/dev` is a de
 - macOS 27+ only; one container per device.
 - The broker shows a Dock icon while a USB container runs.
 - The broker registers for all devices (empty matching criteria), so the menu may offer
-  unrelated devices; only those matching `--usb` are forwarded.
+  unrelated devices; only those matching `--usb` are attached, and `run` names assigned devices
+  that match no filter.
   `AAUSBAccessoryMatchingCriteria` accepts only the legacy `IOUSBDevice` matching dictionary
   (FB24018643).
 - AccessoryAccess releases devices on logout and fast user switching.

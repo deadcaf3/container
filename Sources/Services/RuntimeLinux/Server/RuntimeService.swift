@@ -327,11 +327,17 @@ public actor RuntimeService {
                     let wait = Duration.seconds(config.usbWaitSeconds ?? 5)
                     if await !usbPassthrough.waitForRequested(timeout: wait) {
                         let devices = config.usbDevices.map(\.description).joined(separator: ", ")
-                        warning =
+                        var message =
                             "USB device(s) \(devices) not attached yet; choose \"Use with container\" for them in the Virtual Machine Accessories menu bar item. They attach as soon as they are assigned."
+                        let unrequested = usbPassthrough.unrequestedDevices()
+                        if !unrequested.isEmpty {
+                            message +=
+                                " Assigned but not matching --usb: \(unrequested.joined(separator: ", ")); check the IDs, or pass just the vendor ID."
+                        }
+                        warning = message
                         self.log.warning(
                             "requested USB devices not attached yet; assign them from the Virtual Machine Accessories menu",
-                            metadata: ["usb": "\(config.usbDevices)"])
+                            metadata: ["usb": "\(config.usbDevices)", "unrequested": "\(unrequested)"])
                     }
                 }
 

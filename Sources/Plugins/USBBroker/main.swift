@@ -20,8 +20,8 @@
 /// (AAUSBAccessoryManager.h). The runtime helper is started by launchd and is classified as a
 /// background service, so it can never be offered a device. The runtime launches this app
 /// instead; it receives devices assigned from the Virtual Machine Accessories menu and forwards
-/// the ones matching `--usb` to the runtime as XPC representations, which the runtime attaches
-/// to the container's VM.
+/// them to the runtime as XPC representations, and the runtime attaches the ones matching
+/// `--usb` to the container's VM.
 ///
 ///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid]>...
 
@@ -113,10 +113,8 @@ final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
         let vendorID = UInt16(bytes[8]) | UInt16(bytes[9]) << 8
         let productID = UInt16(bytes[10]) | UInt16(bytes[11]) << 8
         let ids = String(format: "%04x:%04x", vendorID, productID)
-        guard arguments.filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID) }) else {
-            logger.info("\(ids, privacy: .public) assigned but not requested by --usb; ignoring")
-            return
-        }
+        // Forward every assigned device: the runtime applies --usb, and reports assigned devices
+        // that match no filter to the user.
         guard lock.withLock({ forwarded.insert(accessory.registryID).inserted }) else {
             return
         }

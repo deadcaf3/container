@@ -33,6 +33,8 @@ protocol USBPassthroughControl: Sendable {
     func waitForRequested(timeout: Duration) async -> Bool
     /// Attaches an accessory forwarded by the broker. Returns a short status for the broker.
     func receive(xpcRepresentation: xpc_object_t) -> String
+    /// IDs (`vvvv:pppp`) of devices assigned in the menu that match no `--usb` filter.
+    func unrequestedDevices() -> [String]
     /// Detaches every passed-through device and quits the broker.
     func teardown() async
 }
@@ -60,6 +62,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private var broker: NSRunningApplication?
     private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16)] = [:]
     private var inFlight: Set<UInt64> = []
+    private var unrequested: Set<String> = []
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     init(filters: [USBDeviceFilter], containerID: String, log: Logger) throws {
@@ -183,6 +186,10 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         return receive(accessory)
     }
 
+    func unrequestedDevices() -> [String] {
+        lock.withLock { unrequested.sorted() }
+    }
+
     func teardown() async {
         let (instance, broker, waiting) = lock.withLock {
             defer {
@@ -229,6 +236,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         let ids = String(format: "%04x:%04x", vendorID, productID)
         guard filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID) }) else {
             log.info("usb: accessory does not match --usb, ignoring", metadata: ["registryID": "\(registryID)", "ids": "\(ids)"])
+            _ = lock.withLock { unrequested.insert(ids) }
             return "ignored: \(ids) not requested"
         }
 

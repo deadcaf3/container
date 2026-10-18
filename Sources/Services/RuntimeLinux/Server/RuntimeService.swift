@@ -343,6 +343,9 @@ public actor RuntimeService {
                             "requested USB devices not attached yet; assign them from the Virtual Machine Accessories menu",
                             metadata: ["usb": "\(config.usbDevices)", "unrequested": "\(unrequested)"])
                     }
+                    if let kernelWarning = self.usbKernelWarning(kernel: kernel) {
+                        warning = warning.map { "\($0) \(kernelWarning)" } ?? kernelWarning
+                    }
                 }
 
                 try await self.initializeWaiters(for: id)
@@ -367,6 +370,23 @@ public actor RuntimeService {
             }
             return reply
         }
+    }
+
+    /// A warning for `--usb` on a guest kernel without USB host support, where an attached device
+    /// never appears in the guest. A scan failure is logged and produces no warning: the kernel
+    /// is about to be booted either way, and a wrong warning is worse than none.
+    private nonisolated func usbKernelWarning(kernel: Kernel) -> String? {
+        do {
+            guard try !KernelImageScan.hasUSBHostSupport(at: kernel.path) else {
+                return nil
+            }
+        } catch {
+            self.log.warning("failed to scan the kernel image for USB support", metadata: ["path": "\(kernel.path.path)", "error": "\(error)"])
+            return nil
+        }
+        self.log.warning("guest kernel has no USB host support; --usb devices will not appear in the container", metadata: ["path": "\(kernel.path.path)"])
+        return
+            "The guest kernel has no USB host support, so the container cannot see USB devices; pass a USB-enabled kernel with --kernel (see docs/usb-passthrough.md, Guest kernel)."
     }
 
     /// Attach a USB accessory forwarded by the USB broker.

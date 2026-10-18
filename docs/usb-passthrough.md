@@ -120,7 +120,9 @@ scripts/usb/build-kernel.sh      # → bin/vmlinux-arm64-usb
 The kernel is containerization's guest kernel config plus
 [`kernel/usb/config-arm64-usb.fragment`](../kernel/usb/config-arm64-usb.fragment): the XHCI host
 controller, USB core and usbfs (`/dev/bus/usb`), CDC ACM, common USB serial adapters, and HID.
-Pass it per container with `--kernel` so other containers keep the default kernel.
+Pass it per container with `--kernel` so other containers keep the default kernel. If `--usb` is
+used with a kernel that has no USB host support (such as the default kernel), the runtime still
+starts the container but prints a warning saying the devices cannot appear in the guest.
 
 ## 3. Run
 

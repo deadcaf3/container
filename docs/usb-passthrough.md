@@ -1,8 +1,9 @@
 # USB passthrough (experimental proof of concept)
 
 > **Status: proof of concept on the `usb-passthrough-poc` branch of
-> [beriberikix/container](https://github.com/beriberikix/container).** Not part of apple/container.
-> Verified on macOS 27.0 (`26A428`) with Xcode 27.0 and a SEGGER J-Link.
+> [deadcaf3/container](https://github.com/deadcaf3/container).** Not part of apple/container.
+> Verified on macOS 27.0 (`26A428`) with Xcode 27.0 and a SEGGER J-Link. Based on Jonathan Beri's
+> original proof of concept in [beriberikix/container](https://github.com/beriberikix/container).
 
 `container run --usb <vid[:pid[:serial]]>` passes a physical USB device — a debug probe, a serial
 adapter — through to the Linux VM backing a container, using the macOS 27
@@ -45,7 +46,7 @@ importing the certificate, install the
 ## 2. Build
 
 ```bash
-git clone -b usb-passthrough-poc https://github.com/beriberikix/container
+git clone -b usb-passthrough-poc https://github.com/deadcaf3/container
 cd container
 make USB_BUNDLE_ID=com.example.container-usb \
      USB_PROFILE=/path/to/profile.provisionprofile

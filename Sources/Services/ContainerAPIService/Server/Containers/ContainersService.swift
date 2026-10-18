@@ -64,13 +64,15 @@ public actor ContainersService {
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
     private weak var networksService: NetworksService?
+    private let usbBroker: USBBrokerClient?
 
     public init(
         appRoot: URL,
         pluginLoader: PluginLoader,
         containerSystemConfig: ContainerSystemConfig,
         log: Logger,
-        debugHelpers: Bool = false
+        debugHelpers: Bool = false,
+        usbBroker: USBBrokerClient? = nil
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
@@ -81,6 +83,7 @@ public actor ContainersService {
         self.containerSystemConfig = containerSystemConfig
         self.log = log
         self.debugHelpers = debugHelpers
+        self.usbBroker = usbBroker
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
         self.containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
     }
@@ -846,15 +849,23 @@ public actor ContainersService {
 
     // MARK: - USB passthrough
 
-    /// The USB devices reported by every running container that was started with `--usb`.
+    /// The USB devices reported by every running container that was started with `--usb`, or
+    /// by the shared broker when no such container runs.
     public func usbList() async throws -> [USBDeviceState] {
         self.log.debug("\(#function)")
 
+        let running = self.containers.values.filter {
+            $0.snapshot.status == .running && !$0.snapshot.configuration.usbDevices.isEmpty
+        }
+        // Each running --usb container still has its own broker; ask the shared one only when
+        // it cannot compete with them for devices.
+        if running.isEmpty, let usbBroker {
+            return try await usbBroker.list()
+        }
+
         var devices: [USBDeviceState] = []
-        for state in self.containers.values.sorted(by: { $0.snapshot.id < $1.snapshot.id }) {
-            guard state.snapshot.status == .running, !state.snapshot.configuration.usbDevices.isEmpty,
-                let client = state.client
-            else {
+        for state in running.sorted(by: { $0.snapshot.id < $1.snapshot.id }) {
+            guard let client = state.client else {
                 continue
             }
             do {

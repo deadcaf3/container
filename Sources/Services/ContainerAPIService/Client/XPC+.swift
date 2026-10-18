@@ -150,6 +150,8 @@ public enum XPCKeys: String {
     case usbDevices
     case usbFilter
     case usbResult
+    /// The shared USB broker's XPC endpoint.
+    case usbBrokerEndpoint
 }
 
 public enum XPCRoute: String {
@@ -176,6 +178,8 @@ public enum XPCRoute: String {
     case containerUSBList
     case containerUSBAttach
     case containerUSBDetach
+    /// The shared USB broker checks in its endpoint.
+    case usbBrokerCheckIn
 
     case pluginLoad
     case pluginGet

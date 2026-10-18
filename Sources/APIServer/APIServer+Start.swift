@@ -281,12 +281,14 @@ extension APIServer {
 
             // TODO: Remove when we convert ContainersService to FilePath
             let appRootURL = URL(fileURLWithPath: appRoot.string)
+            let usbBroker = USBBrokerClient(installRoot: URL(fileURLWithPath: installRoot.string), log: log)
             let service = try ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,
                 containerSystemConfig: containerSystemConfig,
                 log: log,
-                debugHelpers: debug
+                debugHelpers: debug,
+                usbBroker: usbBroker
             )
             let harness = ContainersHarness(service: service, log: log)
 
@@ -311,6 +313,7 @@ extension APIServer {
             routes[XPCRoute.containerUSBList] = XPCServer.route(harness.usbList)
             routes[XPCRoute.containerUSBAttach] = XPCServer.route(harness.usbAttach)
             routes[XPCRoute.containerUSBDetach] = XPCServer.route(harness.usbDetach)
+            routes[XPCRoute.usbBrokerCheckIn] = XPCServer.route { try await usbBroker.checkIn($0) }
 
             return service
         }

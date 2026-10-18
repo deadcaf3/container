@@ -23,7 +23,7 @@
 /// them to the runtime as XPC representations, and the runtime attaches the ones matching
 /// `--usb` to the container's VM.
 ///
-///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid]>...
+///   container-usb-broker --service <runtime mach service> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...
 
 @preconcurrency import AccessoryAccess
 import AppKit
@@ -230,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 guard let arguments = BrokerArguments.parse(Array(CommandLine.arguments.dropFirst())) else {
-    FileHandle.standardError.write(Data("usage: container-usb-broker --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid]>...\n".utf8))
+    FileHandle.standardError.write(Data("usage: container-usb-broker --service <name> --container <id> --runtime-pid <pid> --usb <vid[:pid[:serial]]>...\n".utf8))
     exit(64)
 }
 

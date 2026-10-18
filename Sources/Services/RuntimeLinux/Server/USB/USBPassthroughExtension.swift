@@ -245,7 +245,8 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             }
             filters.append(filter)
             let candidates = known.filter { registryID, device in
-                device.assigned && attached[registryID] == nil && filter.matches(vendorID: device.vendorID, productID: device.productID)
+                device.assigned && attached[registryID] == nil
+                    && filter.matches(vendorID: device.vendorID, productID: device.productID, serialNumber: device.serialNumber)
             }
             return .attach(candidates.values.map(\.accessory))
         }
@@ -284,7 +285,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
 
     func detach(_ filter: USBDeviceFilter) async throws -> String {
         nonisolated(unsafe) let targets: [(registryID: UInt64, device: VZUSBPassthroughDevice, ids: String)] = lock.withLock {
-            let matching = attached.filter { filter.matches(vendorID: $0.value.vendorID, productID: $0.value.productID) }
+            let matching = attached.filter { filter.matches(vendorID: $0.value.vendorID, productID: $0.value.productID, serialNumber: $0.value.serialNumber) }
             guard !matching.isEmpty else {
                 return []
             }
@@ -345,7 +346,7 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         guard let (vendorID, productID) = Self.ids(from: accessory.deviceDescriptorData) else {
             return
         }
-        let serialNumber = USBDeviceProperties.serialNumber(registryID: accessory.registryID)
+        let serialNumber = Self.serialNumber(registryID: accessory.registryID)
         let product = USBDeviceProperties.product(registryID: accessory.registryID)
         lock.withLock {
             known[accessory.registryID] = KnownAccessory(

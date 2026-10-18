@@ -26,7 +26,7 @@ extension Application.USBCommand {
             abstract: "Return a USB device from a running container to macOS"
         )
 
-        @Argument(help: "Device to detach, as hex vid or vid:pid (the --usb selector)")
+        @Argument(help: "Device to detach, as hex vid, vid:pid or vid:pid:serial (the --usb selector)")
         var device: String
 
         @Argument(help: "Container ID or name (default: the container the device is attached to)")

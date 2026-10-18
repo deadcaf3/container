@@ -36,11 +36,12 @@ extension Application {
         @OptionGroup
         public var logOptions: Flags.Logging
 
-        /// Parses the `VID[:PID]` selector shared with `--usb`.
+        /// Parses the `VID[:PID[:SERIAL]]` selector shared with `--usb`.
         static func filter(parsing selector: String) throws -> USBDeviceFilter {
             guard let filter = USBDeviceFilter(parsing: selector) else {
                 throw ContainerizationError(
-                    .invalidArgument, message: "invalid USB device '\(selector)': expected hex vid or vid:pid, e.g. 1366 or 1366:0101")
+                    .invalidArgument,
+                    message: "invalid USB device '\(selector)': expected hex vid, vid:pid or vid:pid:serial, e.g. 1366, 1366:0101 or 1366:0101:000123")
             }
             return filter
         }

@@ -34,6 +34,8 @@ struct USBDeviceStateTests {
         #expect(probe.matches(USBDeviceFilter(vendorID: 0x1366, productID: 0x0105)))
         #expect(!probe.matches(USBDeviceFilter(vendorID: 0x1366, productID: 0x0101)))
         #expect(!probe.matches(USBDeviceFilter(vendorID: 0x0483)))
+        #expect(probe.matches(USBDeviceFilter(vendorID: 0x1366, productID: 0x0105, serialNumber: "000123")))
+        #expect(!probe.matches(USBDeviceFilter(vendorID: 0x1366, productID: 0x0105, serialNumber: "000999")))
     }
 
     @Test func roundTripsThroughJSON() throws {
@@ -51,5 +53,11 @@ struct USBDeviceStateTests {
         #expect(!exact.covers(vendor))
         #expect(!exact.covers(other))
         #expect(!vendor.covers(USBDeviceFilter(vendorID: 0x0483)))
+
+        let serial = USBDeviceFilter(vendorID: 0x1366, productID: 0x0105, serialNumber: "000123")
+        #expect(exact.covers(serial))
+        #expect(vendor.covers(serial))
+        #expect(!serial.covers(exact))
+        #expect(!serial.covers(USBDeviceFilter(vendorID: 0x1366, productID: 0x0105, serialNumber: "000999")))
     }
 }

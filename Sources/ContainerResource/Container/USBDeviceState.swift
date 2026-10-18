@@ -64,7 +64,7 @@ public struct USBDeviceState: Sendable, Codable, Equatable {
 
     /// Whether `filter` selects this device.
     public func matches(_ filter: USBDeviceFilter) -> Bool {
-        filter.matches(vendorID: vendorID, productID: productID)
+        filter.matches(vendorID: vendorID, productID: productID, serialNumber: serialNumber)
     }
 }
 
@@ -72,6 +72,8 @@ extension USBDeviceFilter {
     /// Whether every device `other` selects is also selected by this filter, so adding `other`
     /// to a container that already has this filter changes nothing.
     public func covers(_ other: USBDeviceFilter) -> Bool {
-        vendorID == other.vendorID && (productID == nil || productID == other.productID)
+        vendorID == other.vendorID
+            && (productID == nil || productID == other.productID)
+            && (serialNumber == nil || serialNumber == other.serialNumber)
     }
 }

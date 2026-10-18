@@ -21,22 +21,15 @@ import IOKit
 enum USBDeviceProperties {
     /// The product string of the device with `registryID`, if the registry still has it.
     static func product(registryID: UInt64) -> String? {
-        string("USB Product Name", registryID: registryID)
-    }
-
-    /// The serial number of the device with `registryID`, if it reports one.
-    static func serialNumber(registryID: UInt64) -> String? {
-        string("USB Serial Number", registryID: registryID)
-    }
-
-    private static func string(_ key: String, registryID: UInt64) -> String? {
         let entry = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(registryID))
         guard entry != IO_OBJECT_NULL else {
             return nil
         }
         defer { IOObjectRelease(entry) }
-        let value = IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)
-        let text = (value?.takeRetainedValue() as? String)?.trimmingCharacters(in: .whitespaces)
-        return text?.isEmpty == false ? text : nil
+        let value = IORegistryEntryCreateCFProperty(entry, "USB Product Name" as CFString, kCFAllocatorDefault, 0)
+        guard let text = (value?.takeRetainedValue() as? String)?.trimmingCharacters(in: .whitespaces), !text.isEmpty else {
+            return nil
+        }
+        return text
     }
 }

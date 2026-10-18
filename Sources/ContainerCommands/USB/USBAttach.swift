@@ -25,7 +25,7 @@ extension Application.USBCommand {
             abstract: "Pass a USB device through to a running container"
         )
 
-        @Argument(help: "Device to attach, as hex vid or vid:pid (the --usb selector)")
+        @Argument(help: "Device to attach, as hex vid, vid:pid or vid:pid:serial (the --usb selector)")
         var device: String
 
         @Argument(help: "Container ID or name")

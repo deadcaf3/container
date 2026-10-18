@@ -34,10 +34,16 @@ DEST_DIR ?= /usr/local/
 ROOT_DIR := $(shell git rev-parse --show-toplevel)
 BUILD_BIN_DIR = $(shell $(SWIFT) build -c $(BUILD_CONFIGURATION) --show-bin-path)
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
-PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
+# Developer ID distribution build (see docs/usb-passthrough.md): SIGN_IDENTITY, a Developer ID
+# Application identity, signs every binary with the hardened runtime and a secure timestamp so
+# the package can be notarized; INSTALLER_IDENTITY, a Developer ID Installer identity, signs the
+# package itself.
+SIGN_IDENTITY ?=
+INSTALLER_IDENTITY ?=
+PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer$(if $(INSTALLER_IDENTITY),,-unsigned).pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
 DSYM_PATH := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM.zip
-CODESIGN_OPTS ?= --force --sign - --timestamp=none
+CODESIGN_OPTS ?= $(if $(SIGN_IDENTITY),--force --sign "$(SIGN_IDENTITY)" --timestamp --options runtime,--force --sign - --timestamp=none)
 
 # Default isolated application data root under the project directory so test runs do not touch your
 # own installation. Override with APP_ROOT=/your/path, or APP_ROOT= (empty) to run against
@@ -186,12 +192,12 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/builder/bin/builder)"
 	@if [ -n "$(USB_PROFILE)" ] ; then \
 		echo Staging provisioned USB broker... ; \
-		USB_BUNDLE_ID="$(USB_BUNDLE_ID)" USB_PROFILE="$(USB_PROFILE)" USB_IDENTITY="$(USB_IDENTITY)" RELEASE_VERSION="$(RELEASE_VERSION)" \
+		USB_BUNDLE_ID="$(USB_BUNDLE_ID)" USB_PROFILE="$(USB_PROFILE)" USB_IDENTITY="$(or $(USB_IDENTITY),$(SIGN_IDENTITY))" RELEASE_VERSION="$(RELEASE_VERSION)" \
 			scripts/usb/bundle-broker.sh "$(STAGING_DIR)" "$(BUILD_BIN_DIR)/container-usb-broker" "$(BUILD_BIN_DIR)/container-runtime-linux" ; \
 	fi
 
 	@echo Creating application installer
-	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
+	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(if $(INSTALLER_IDENTITY),--sign "$(INSTALLER_IDENTITY)" --timestamp) $(PKG_PATH)
 	@rm -rf "$(STAGING_DIR)"
 
 .PHONY: dsym

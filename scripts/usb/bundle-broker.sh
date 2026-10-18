@@ -18,8 +18,9 @@
 #   scripts/usb/bundle-broker.sh <staging-dir> <container-usb-broker binary>
 #
 # Requires USB_BUNDLE_ID (an explicit App ID with the "Claim USB Accessory" capability) and
-# USB_PROFILE (a macOS development provisioning profile for it). USB_IDENTITY defaults to the
-# first "Apple Development" identity in the keychain.
+# USB_PROFILE (a macOS development or Developer ID provisioning profile for it). A Developer ID
+# profile makes a distribution build: hardened runtime, secure timestamp, no get-task-allow,
+# ready for notarization. USB_IDENTITY defaults to the first matching identity in the keychain.
 #
 # AccessoryAccess only assigns devices to an ordinary, Dock-visible application, and
 # com.apple.developer.accessory-access.usb is a restricted entitlement that needs an app bundle
@@ -31,9 +32,6 @@ BINARY="${2:?usage: bundle-broker.sh <staging-dir> <broker-binary> <runtime-bina
 RUNTIME_BINARY="${3:?usage: bundle-broker.sh <staging-dir> <broker-binary> <runtime-binary>}"
 : "${USB_BUNDLE_ID:?set USB_BUNDLE_ID to your App ID (see docs/usb-passthrough.md)}"
 : "${USB_PROFILE:?set USB_PROFILE to the .provisionprofile for USB_BUNDLE_ID}"
-USB_IDENTITY="${USB_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
-	| grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"' || true)}"
-[ -n "$USB_IDENTITY" ] || { echo "no Apple Development identity found; set USB_IDENTITY" >&2; exit 1; }
 [ -f "$USB_PROFILE" ] || { echo "USB_PROFILE not found: $USB_PROFILE" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -43,6 +41,20 @@ VERSION="${RELEASE_VERSION:-0.0.0}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+security cms -D -i "$USB_PROFILE" -o "$WORK/profile.plist"
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$WORK/profile.plist" 2>/dev/null)" = true ]; then
+	DISTRIBUTION=1
+	IDENTITY_KIND="Developer ID Application"
+	SIGN_OPTS=(--timestamp --options runtime)
+else
+	DISTRIBUTION=0
+	IDENTITY_KIND="Apple Development"
+	SIGN_OPTS=(--timestamp=none)
+fi
+USB_IDENTITY="${USB_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+	| grep -o "\"$IDENTITY_KIND: [^\"]*\"" | head -1 | tr -d '"' || true)}"
+[ -n "$USB_IDENTITY" ] || { echo "no $IDENTITY_KIND identity found; set USB_IDENTITY" >&2; exit 1; }
+
 echo "==> staging $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
@@ -51,12 +63,11 @@ sed -e "s/@USB_BUNDLE_ID@/$USB_BUNDLE_ID/" -e "s/@VERSION@/$VERSION/" \
 	"$ROOT/Sources/Plugins/USBBroker/Info.plist.in" > "$APP/Contents/Info.plist"
 cp "$USB_PROFILE" "$APP/Contents/embedded.provisionprofile"
 
-# A development build must carry the profile's application and team identifiers, plus
-# get-task-allow. Derive them from the profile so they cannot drift.
-security cms -D -i "$USB_PROFILE" -o "$WORK/profile.plist"
-python3 - "$ROOT/signing/$NAME.entitlements" "$WORK/profile.plist" "$WORK/entitlements.plist" "$USB_BUNDLE_ID" <<'PY'
+# The bundle must carry the profile's application and team identifiers; a development build
+# also gets get-task-allow. Derive them from the profile so they cannot drift.
+python3 - "$ROOT/signing/$NAME.entitlements" "$WORK/profile.plist" "$WORK/entitlements.plist" "$USB_BUNDLE_ID" "$DISTRIBUTION" <<'PY'
 import plistlib, sys
-entitlements_path, profile_path, out_path, bundle_id = sys.argv[1:5]
+entitlements_path, profile_path, out_path, bundle_id, distribution = sys.argv[1:6]
 with open(entitlements_path, 'rb') as fh:
     ent = plistlib.load(fh)
 with open(profile_path, 'rb') as fh:
@@ -72,7 +83,8 @@ if not granted.get('com.apple.developer.accessory-access.usb'):
     sys.exit('profile does not grant com.apple.developer.accessory-access.usb (Claim USB Accessory)')
 ent['com.apple.developer.team-identifier'] = team
 ent['com.apple.application-identifier'] = f'{team}.{bundle_id}'
-ent['com.apple.security.get-task-allow'] = True
+if distribution != '1':
+    ent['com.apple.security.get-task-allow'] = True
 with open(out_path, 'wb') as fh:
     plistlib.dump(ent, fh)
 print('    entitlements:', ', '.join(sorted(ent)))
@@ -96,16 +108,15 @@ cat > "$WORK/runtime.entitlements" <<'PLIST'
 	<true/>
 	<key>com.apple.security.device.usb</key>
 	<true/>
-	<key>com.apple.security.get-task-allow</key>
-	<true/>
 </dict>
 </plist>
 PLIST
-codesign --force --sign "$USB_IDENTITY" --identifier "$USB_BUNDLE_ID" --entitlements "$WORK/runtime.entitlements" --timestamp=none "$RUNTIME_IN_BUNDLE"
+[ "$DISTRIBUTION" = 1 ] || /usr/libexec/PlistBuddy -c 'Add :com.apple.security.get-task-allow bool true' "$WORK/runtime.entitlements"
+codesign --force --sign "$USB_IDENTITY" --identifier "$USB_BUNDLE_ID" --entitlements "$WORK/runtime.entitlements" "${SIGN_OPTS[@]}" "$RUNTIME_IN_BUNDLE"
 PLUGIN_BIN="$STAGING_DIR/libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux"
 rm -f "$PLUGIN_BIN"
 ln -s ../../../usb/container-usb.app/Contents/MacOS/container-runtime-linux "$PLUGIN_BIN"
 
-codesign --force --sign "$USB_IDENTITY" --entitlements "$WORK/entitlements.plist" --timestamp=none "$APP"
+codesign --force --sign "$USB_IDENTITY" --entitlements "$WORK/entitlements.plist" "${SIGN_OPTS[@]}" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" || true

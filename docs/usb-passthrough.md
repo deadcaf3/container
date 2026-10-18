@@ -18,7 +18,8 @@ Background: [beriberikix/usb-macos-vm](https://github.com/beriberikix/usb-macos-
 - Apple silicon, **macOS 27** or later, **Xcode 27** (the macOS 27 SDK).
 - A **paid Apple Developer membership.** `com.apple.developer.accessory-access.usb` is a
   restricted entitlement, so part of the build is signed with your Apple Development
-  certificate and a provisioning profile. There is no prebuilt package for that reason.
+  certificate and a provisioning profile. A [Developer ID build](#distribution-build-developer-id)
+  signed by one team runs on any Mac without this, but none is published yet.
 - A guest kernel with USB host support — the default kernel has USB disabled. See
   [Guest kernel](#guest-kernel).
 - Run `container` from a Terminal in your logged-in GUI session, not over SSH.
@@ -55,6 +56,56 @@ signed with the first Apple Development identity in your keychain (override with
 `USB_IDENTITY="Apple Development: …"`). Use the in-tree build (`bin/container`) rather than
 `make install`. Without `USB_PROFILE` the build is unchanged and `--usb` reports that the broker
 is not installed.
+
+## Distribution build (Developer ID)
+
+A development profile only works on the Macs registered in it. A Developer ID profile has no
+device list, so one build signed by one team runs on any Mac, and once notarized, Gatekeeper
+accepts it after a download. People who install that build need no Apple Developer membership.
+
+In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources), with the
+App ID from step 1:
+
+1. **Certificates → +** → **Developer ID Application**, and **Developer ID Installer** to sign the
+   package. Choose the **G2 Sub-CA**. If `security find-identity -v` does not list them after
+   importing, install the
+   [Developer ID G2 intermediate](https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer).
+2. **Profiles → +** → under Distribution, **Developer ID** → your App ID and Developer ID
+   Application certificate. There is no device step. Download the `.provisionprofile`.
+
+Build and sign the package:
+
+```bash
+make release SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" \
+     INSTALLER_IDENTITY="Developer ID Installer: <name> (<team-id>)" \
+     USB_BUNDLE_ID=com.example.container-usb \
+     USB_PROFILE=/path/to/developer-id.provisionprofile
+```
+
+`SIGN_IDENTITY` signs every binary with the hardened runtime and a secure timestamp.
+`bundle-broker.sh` sees that the profile provisions all devices and signs `container-usb.app` the
+same way, without `get-task-allow`. `INSTALLER_IDENTITY` signs the package, which is written to
+`bin/release/container-installer.pkg`. Without it the package is unsigned and cannot be
+notarized.
+
+Notarize and staple the package:
+
+```bash
+# Once: save notary credentials (prompts for an app-specific password from account.apple.com).
+xcrun notarytool store-credentials <keychain-profile> --apple-id <apple-id> --team-id <team-id>
+
+xcrun notarytool submit bin/release/container-installer.pkg --keychain-profile <keychain-profile> --wait
+xcrun stapler staple bin/release/container-installer.pkg
+spctl -a -t install -vv bin/release/container-installer.pkg   # accepted, source=Notarized Developer ID
+```
+
+The package installs into `/usr/local` with the same identifiers as an apple/container release,
+so it replaces an existing installation.
+
+Verified so far: with every binary signed this way, an in-tree install starts, runs containers
+with networking, and passes a J-Link through; the whole install tree notarizes with no issues.
+Signing the package with a Developer ID Installer identity and installing it into `/usr/local`
+have not been tested.
 
 ## Guest kernel
 
@@ -149,3 +200,37 @@ The guest kernel needs USB host support built in; the container's `/dev` is a de
 - AccessoryAccess releases devices on logout and fast user switching.
 - Logs: `bin/container system logs` shows the runtime (`usb:`) and broker (`USBBroker`) lines;
   the guest kernel's USB messages are in `container logs --boot <id>`.
+
+## Open blockers
+
+What stands between this proof of concept and `--usb` working out of the box.
+
+### 1. Signing and distribution
+
+- **Problem:** a development build needs each user's own paid membership, App ID, registered Mac
+  and provisioning profile, which is about 30 minutes in the developer portal before anything
+  runs.
+- **Status:** solved in the fork, not yet published. A fully
+  [Developer ID signed build](#distribution-build-developer-id) passes a J-Link through and
+  notarizes with no issues, and a quarantined copy of the broker passes Gatekeeper.
+- **Remaining:** sign the package with a Developer ID Installer certificate, notarize it, and
+  publish it as a release asset. Users then trust the fork's team instead of Apple.
+- **Who can fix it:** the fork's maintainer. Upstream, Apple would sign its own release with the
+  entitlement.
+
+### 2. Custom guest kernel
+
+- **Problem:** the default kernel has USB disabled, so every `--usb` run also needs
+  `--kernel` with a kernel the user downloaded or built.
+- **Status:** open. The default kernel is the Kata Containers static release
+  (`KernelConfig.defaultURL` in `ContainerSystemConfig.swift`), not containerization's
+  `kernel/config-arm64`, so upstreaming `config-arm64-usb.fragment` into containerization
+  would not change what `container` boots.
+- **Fix, short term (fork):** `vmlinux-arm64-usb` is already a release asset
+  (`usb-kernel-0.1`). Have `--usb` warn when the container runs the default kernel and point at
+  that asset, or fetch it and use it when `--usb` is given without `--kernel`.
+- **Fix, long term:** add USB host support to Kata's kernel config fragments, which would reach
+  `container` when it next bumps the Kata release. The fallback is for apple/container to host a
+  USB kernel of its own and select it when `--usb` is given.
+- **Who can fix it:** the fork for the warning or automatic download; kata-containers for the
+  kernel config; apple/container for a hosted USB kernel.

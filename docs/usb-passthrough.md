@@ -102,10 +102,10 @@ spctl -a -t install -vv bin/release/container-installer.pkg   # accepted, source
 The package installs into `/usr/local` with the same identifiers as an apple/container release,
 so it replaces an existing installation.
 
-Verified so far: with every binary signed this way, an in-tree install starts, runs containers
-with networking, and passes a J-Link through; the whole install tree notarizes with no issues.
-Signing the package with a Developer ID Installer identity and installing it into `/usr/local`
-have not been tested.
+Verified so far, on a debug build: the signed package notarizes with no issues and, once
+stapled, a quarantined copy passes Gatekeeper. Its contents, unpacked in-tree, start, run
+containers with networking, and pass a J-Link through. A release build and installing the
+package into `/usr/local` have not been tested.
 
 ## Guest kernel
 
@@ -227,11 +227,12 @@ What stands between this proof of concept and `--usb` working out of the box.
 - **Problem:** a development build needs each user's own paid membership, App ID, registered Mac
   and provisioning profile, which is about 30 minutes in the developer portal before anything
   runs.
-- **Status:** solved in the fork, not yet published. A fully
-  [Developer ID signed build](#distribution-build-developer-id) passes a J-Link through and
-  notarizes with no issues, and a quarantined copy of the broker passes Gatekeeper.
-- **Remaining:** sign the package with a Developer ID Installer certificate, notarize it, and
-  publish it as a release asset. Users then trust the fork's team instead of Apple.
+- **Status:** solved in the fork, not yet published. A
+  [Developer ID signed and notarized package](#distribution-build-developer-id) passes
+  Gatekeeper, and its contents pass a J-Link through.
+- **Remaining:** build the package in the release configuration, test installing it into
+  `/usr/local`, and publish it as a release asset. Users then trust the fork's team instead of
+  Apple.
 - **Who can fix it:** the fork's maintainer. Upstream, Apple would sign its own release with the
   entitlement.
 

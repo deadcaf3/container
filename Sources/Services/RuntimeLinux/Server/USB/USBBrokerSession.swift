@@ -49,6 +49,15 @@ final class USBBrokerSession: @unchecked Sendable {
         _ = try await send(registration())
     }
 
+    /// Every device the broker holds, and the container each is attached to.
+    func list() async throws -> [USBDeviceState] {
+        let reply = try await send(XPCMessage(route: USBBrokerRoutes.list.rawValue))
+        guard let data = reply.dataNoCopy(key: XPCKeys.usbDevices.rawValue) else {
+            throw ContainerizationError(.internalError, message: "the USB broker returned no device data")
+        }
+        return try JSONDecoder().decode([USBDeviceState].self, from: data)
+    }
+
     /// Replaces the filters the broker matches new and released devices against.
     func updateFilters(_ filters: [USBDeviceFilter]) async {
         lock.withLock { self.filters = filters }

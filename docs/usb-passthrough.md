@@ -241,6 +241,14 @@ restart does not interrupt it. The broker checks in again when the API server re
 a registration when its runtime exits, and quits after 60 s without a request once no runtime
 is registered.
 
+A device that a VM lets go (`usb detach`, a move, `container stop`) re-enumerates on the Mac:
+AccessoryAccess withdraws its accessory and, because the menu assignment persists, offers the
+same device again as a new accessory, with a new registry ID, a few hundred milliseconds later
+(300 to 420 ms with a J-Link). A second `createXPCRepresentation` of the withdrawn accessory is
+useless: the receiving runtime cannot rebuild it. So the broker remembers the release for 10 s
+and gives the device's new accessory to the next matching container, excluding the one that let
+it go; if the device has not re-enumerated after 2 s, it offers the old accessory instead.
+
 The guest kernel needs USB host support built in; the container's `/dev` is a devtmpfs, so
 `/dev/bus/usb` nodes appear without udev.
 

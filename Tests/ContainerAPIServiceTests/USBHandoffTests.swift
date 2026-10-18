@@ -47,6 +47,19 @@ struct USBHandoffTests {
         #expect(ContainersService.usbHandoffSource(for: filter, to: "b", devices: devices)?.containerID == "c")
     }
 
+    @Test func arrivalIsFoundUnderANewRegistryID() {
+        let moved = Self.device(1, serial: "000000000001", in: "a", .attached)
+        let back = Self.device(7, serial: "000000000001", in: "b", .attached)
+        #expect(ContainersService.usbHandoffArrived(moved, at: "b", devices: [back]))
+    }
+
+    @Test func arrivalNeedsTheSameSerialAndTarget() {
+        let moved = Self.device(1, serial: "000000000001", in: "a", .attached)
+        let devices = [Self.device(7, serial: "000000000002", in: "b", .attached), Self.device(8, serial: "000000000001", in: "a", .attached)]
+        #expect(!ContainersService.usbHandoffArrived(moved, at: "b", devices: devices))
+        #expect(!ContainersService.usbHandoffArrived(moved, at: "b", devices: [Self.device(7, serial: "000000000001", .assigned)]))
+    }
+
     @Test func ignoresNonMatchingDevices() {
         let other = USBDeviceState(registryID: 3, vendorID: 0x0483, productID: 0x3748, containerID: "a", status: .attached)
         #expect(ContainersService.usbHandoffSource(for: Self.probe, to: "b", devices: [other]) == nil)

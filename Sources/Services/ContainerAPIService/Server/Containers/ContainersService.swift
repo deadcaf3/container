@@ -872,20 +872,29 @@ public actor ContainersService {
         }
 
         let holder = try self.usbClient(id: device.containerID)
-        let result = try await client.usbAttach(filter)
+        _ = try await client.usbAttach(filter)
         let exact = USBDeviceFilter(vendorID: device.vendorID, productID: device.productID, serialNumber: device.serialNumber)
         self.log.info("usb: moving device", metadata: ["ids": "\(device.ids)", "from": "\(device.containerID)", "to": "\(id)"])
         _ = try await holder.usbDetach(exact)
 
+        // The device re-enumerates once detached, so it reaches `id` under a new registry ID.
         let deadline = ContinuousClock.now + .seconds(10)
         while ContinuousClock.now < deadline {
-            let devices = try await usbBroker.list()
-            if devices.contains(where: { $0.registryID == device.registryID && $0.status == .attached && $0.containerID == id }) {
+            if Self.usbHandoffArrived(device, at: id, devices: try await usbBroker.list()) {
                 return "moved \(device.ids) from \(device.containerID) to \(id)"
             }
             try await Task.sleep(for: .milliseconds(200))
         }
-        return "\(result); detached \(device.ids) from \(device.containerID), but it has not attached to \(id) yet, see `container system logs`"
+        return "detached \(device.ids) from \(device.containerID), but it has not attached to \(id) yet; see `container system logs`"
+    }
+
+    /// Whether `device` is attached to `target`, matched by IDs and serial number because the
+    /// device comes back under a new registry ID after it is detached.
+    static func usbHandoffArrived(_ device: USBDeviceState, at target: String, devices: [USBDeviceState]) -> Bool {
+        devices.contains {
+            $0.status == .attached && $0.containerID == target && $0.vendorID == device.vendorID && $0.productID == device.productID
+                && $0.serialNumber == device.serialNumber
+        }
     }
 
     /// The device to move to container `target` for `filter`: one attached to another container,

@@ -51,9 +51,20 @@ let registryIDKey = "usbRegistryID"
 /// Runtimes register their container, mach service, pid and filters. Each held device goes to
 /// the earliest registered runtime whose filters match it; a device a runtime releases goes to
 /// the next match, never straight back.
+///
+/// A device a VM gives up re-enumerates: AccessoryAccess withdraws its accessory and, since the
+/// assignment persists, offers the same device again as a new accessory a few hundred
+/// milliseconds later. A second representation of the withdrawn accessory is useless (the
+/// receiving runtime cannot rebuild it), so a released device waits for its new accessory.
 @available(macOS 27, *)
 final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
     static let idleTimeout: Duration = .seconds(60)
+    /// How long a released device may take to come back as a new accessory before the old one
+    /// is offered again, for a device that does not re-enumerate.
+    static let reenumerationTimeout: Duration = .seconds(2)
+    /// How long a release is remembered, so a device unplugged after its release and plugged
+    /// in much later is offered as a new device.
+    static let releaseLifetime: Duration = .seconds(10)
 
     private struct Held {
         var accessory: AAUSBAccessory
@@ -75,9 +86,21 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         var order: Int
     }
 
+    /// A device a container gave up, waiting to come back as a new accessory.
+    private struct Release {
+        var vendorID: UInt16
+        var productID: UInt16
+        var serialNumber: String?
+        /// The container that gave it up; the new accessory goes to the next match.
+        var containerID: String
+        var at: ContinuousClock.Instant
+    }
+
     private let lock = NSLock()
     // Guarded by `lock`.
     private var held: [UInt64: Held] = [:]
+    /// Keyed by the registry ID of the accessory that was released.
+    private var releases: [UInt64: Release] = [:]
     private var registrations: [String: Registration] = [:]
     private var nextOrder = 0
     private var lastRequest = ContinuousClock.now
@@ -157,18 +180,58 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
             serialNumber: Self.registryString(accessory.registryID, "USB Serial Number"),
             product: Self.registryString(accessory.registryID, "USB Product Name")
         )
-        let isNew = lock.withLock {
+        let (isNew, release): (Bool, Release?) = lock.withLock {
             guard held[accessory.registryID] == nil else {
-                return false
+                return (false, nil)
             }
             held[accessory.registryID] = device
-            return true
+            // The same device coming back after a container released it.
+            let now = ContinuousClock.now
+            releases = releases.filter { now - $0.value.at < Self.releaseLifetime }
+            let match = releases.first { _, release in
+                release.vendorID == vendorID && release.productID == productID && release.serialNumber == device.serialNumber
+            }
+            if let match {
+                releases.removeValue(forKey: match.key)
+            }
+            return (true, match?.value)
         }
         guard isNew else {
             return
         }
-        logger.info("holding \(String(format: "%04x:%04x", vendorID, productID), privacy: .public)")
-        Task { await offer(accessory.registryID) }
+        let ids = String(format: "%04x:%04x", vendorID, productID)
+        if let release {
+            logger.info("holding \(ids, privacy: .public), back after \(release.containerID, privacy: .public) released it")
+        } else {
+            logger.info("holding \(ids, privacy: .public)")
+        }
+        Task { await offer(accessory.registryID, excluding: release?.containerID) }
+    }
+
+    /// Frees a device `containerID` gave up and waits for it to come back as a new accessory,
+    /// which then goes to the next match. Offers the old accessory again if the device has not
+    /// re-enumerated within `reenumerationTimeout`.
+    private func awaitReenumeration(of registryID: UInt64, releasedBy containerID: String) {
+        lock.withLock {
+            guard let device = held[registryID] else {
+                return
+            }
+            releases[registryID] = Release(
+                vendorID: device.vendorID, productID: device.productID, serialNumber: device.serialNumber, containerID: containerID, at: .now)
+        }
+        Task { [self] in
+            try? await Task.sleep(for: Self.reenumerationTimeout)
+            let stillHere = lock.withLock {
+                guard held[registryID] != nil, releases.removeValue(forKey: registryID) != nil else {
+                    return false
+                }
+                return true
+            }
+            if stillHere {
+                logger.info("\(String(format: "0x%llx", registryID), privacy: .public) did not re-enumerate; offering it again")
+                await offer(registryID, excluding: containerID)
+            }
+        }
     }
 
     /// Sends a free device to the earliest registered runtime, other than `excluded`, whose
@@ -225,9 +288,10 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         }
     }
 
-    /// Offers every free device to the registered runtimes.
+    /// Offers every free device to the registered runtimes, except released ones still waiting
+    /// to come back as new accessories.
     private func offerFree() async {
-        let free = lock.withLock { held.filter { $0.value.owner == nil }.map(\.key) }
+        let free = lock.withLock { held.filter { $0.value.owner == nil && releases[$0.key] == nil }.map(\.key) }
         for registryID in free {
             await offer(registryID)
         }
@@ -333,7 +397,7 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         if free(registryID, heldBy: containerID) {
             logger.info("container \(containerID, privacy: .public) released \(String(format: "0x%llx", registryID), privacy: .public)")
             // Never straight back to the container that gave it up.
-            await offer(registryID, excluding: containerID)
+            awaitReenumeration(of: registryID, releasedBy: containerID)
         }
         return message.reply()
     }
@@ -341,20 +405,25 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
     /// Removes the registration of `containerID` (only if it is still the one from `pid`, when
     /// given) and frees the devices it held.
     private func drop(_ containerID: String, pid: pid_t? = nil) async {
-        let dropped = lock.withLock {
+        let freed: [UInt64]? = lock.withLock {
             guard let registration = registrations[containerID], pid == nil || registration.pid == pid else {
-                return false
+                return nil
             }
             registrations.removeValue(forKey: containerID)
             registration.exit.cancel()
-            for (registryID, device) in held where device.owner == containerID {
+            let owned = held.filter { $0.value.owner == containerID }.map(\.key)
+            for registryID in owned {
                 held[registryID]?.owner = nil
             }
-            return true
+            return owned
         }
-        if dropped {
-            logger.info("unregistered container \(containerID, privacy: .public)")
-            await offerFree()
+        guard let freed else {
+            return
+        }
+        logger.info("unregistered container \(containerID, privacy: .public)")
+        // Its VM let the devices go, or is about to; they come back as new accessories.
+        for registryID in freed {
+            awaitReenumeration(of: registryID, releasedBy: containerID)
         }
     }
 
@@ -377,7 +446,8 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
     /// Hands the listener's endpoint to the API server. Checks in again when the API server
     /// restarts, and quits when it is gone for good.
     private func checkIn() {
-        let connection = xpc_connection_create_mach_service(apiServerService, .main, 0)
+        // Only used on the main queue, which runs its event handler.
+        nonisolated(unsafe) let connection = xpc_connection_create_mach_service(apiServerService, .main, 0)
         xpc_connection_set_event_handler(connection) { [self] event in
             if xpc_equal(event, XPC_ERROR_CONNECTION_INTERRUPTED) {
                 logger.info("API server restarted; checking in again")
@@ -395,7 +465,7 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
         xpc_connection_send_message_with_reply(connection, message.underlying, .main) { reply in
             if xpc_equal(reply, XPC_ERROR_CONNECTION_INVALID) {
                 logger.info("API server is gone; quitting")
-                NSApplication.shared.terminate(nil)
+                Self.quit()
                 return
             }
             if let error = XPCMessage(object: reply).errorKeyDescription() {
@@ -412,8 +482,15 @@ final class SharedBroker: NSObject, AAUSBAccessoryListener, @unchecked Sendable 
             let idle = lock.withLock { registrations.isEmpty && ContinuousClock.now - lastRequest > Self.idleTimeout }
             if idle {
                 logger.info("idle; quitting")
-                NSApplication.shared.terminate(nil)
+                Self.quit()
             }
+        }
+    }
+
+    /// Terminates the app. Call on the main queue, where the check-in replies and the idle timer run.
+    private static func quit() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.terminate(nil)
         }
     }
 

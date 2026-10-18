@@ -331,9 +331,15 @@ public actor RuntimeService {
                         try await Task.sleep(for: .seconds(1))
                     } else {
                         let devices = config.usbDevices.map(\.description).joined(separator: ", ")
-                        var message =
-                            "USB device(s) \(devices) not attached yet; choose \"Use with container\" for them in the Virtual Machine Accessories menu bar item. They attach as soon as they are assigned."
-                        let unrequested = usbPassthrough.unrequestedDevices()
+                        var message: String
+                        let (unrequested, heldElsewhere) = await usbPassthrough.unattachedDevices()
+                        if heldElsewhere.isEmpty {
+                            message =
+                                "USB device(s) \(devices) not attached yet; choose \"Use with container\" for them in the Virtual Machine Accessories menu bar item. They attach as soon as they are assigned."
+                        } else {
+                            message =
+                                "USB device(s) \(devices) not attached yet: held by another container (\(heldElsewhere.joined(separator: ", "))); move it here with `container usb attach <device> \(config.id)`."
+                        }
                         if !unrequested.isEmpty {
                             message +=
                                 " Assigned but not matching --usb: \(unrequested.joined(separator: ", ")) (vid:pid[:serial]); check the IDs, pass just the vendor ID, or add the serial to pick one device."
@@ -341,7 +347,7 @@ public actor RuntimeService {
                         warning = message
                         self.log.warning(
                             "requested USB devices not attached yet; assign them from the Virtual Machine Accessories menu",
-                            metadata: ["usb": "\(config.usbDevices)", "unrequested": "\(unrequested)"])
+                            metadata: ["usb": "\(config.usbDevices)", "unrequested": "\(unrequested)", "heldElsewhere": "\(heldElsewhere)"])
                     }
                     if let kernelWarning = self.usbKernelWarning(kernel: kernel) {
                         warning = warning.map { "\($0) \(kernelWarning)" } ?? kernelWarning

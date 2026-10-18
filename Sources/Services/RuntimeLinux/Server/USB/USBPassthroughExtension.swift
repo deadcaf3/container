@@ -33,9 +33,10 @@ protocol USBPassthroughControl: Sendable {
     func waitForRequested(timeout: Duration) async -> Bool
     /// Attaches an accessory forwarded by the broker. Returns a short status for the broker.
     func receive(xpcRepresentation: xpc_object_t) -> String
-    /// IDs (`vvvv:pppp`, or `vvvv:pppp:serial` when the device reports a serial number) of
-    /// devices assigned in the menu that match no `--usb` filter.
-    func unrequestedDevices() -> [String]
+    /// Assigned devices this container did not get, from the broker: free ones that match no
+    /// `--usb` filter (`vvvv:pppp`, or `vvvv:pppp:serial` when the device reports a serial
+    /// number), and ones a filter matches that another container holds (`vvvv:pppp in <id>`).
+    func unattachedDevices() async -> (unrequested: [String], heldElsewhere: [String])
     /// Detaches every passed-through device and unregisters from the broker.
     func teardown() async
 
@@ -73,7 +74,6 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private var brokerSession: USBBrokerSession?
     private var attached: [UInt64: (device: VZUSBPassthroughDevice, vendorID: UInt16, productID: UInt16, serialNumber: String?)] = [:]
     private var inFlight: Set<UInt64> = []
-    private var unrequested: Set<String> = []
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// Every accessory the broker has forwarded, keyed by registry ID.
     private var known: [UInt64: KnownAccessory] = [:]
@@ -187,8 +187,29 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         return receive(accessory)
     }
 
-    func unrequestedDevices() -> [String] {
-        lock.withLock { unrequested.sorted() }
+    func unattachedDevices() async -> (unrequested: [String], heldElsewhere: [String]) {
+        guard let (session, filters) = lock.withLock({ brokerSession.map { ($0, filters) } }) else {
+            return ([], [])
+        }
+        let devices: [USBDeviceState]
+        do {
+            devices = try await session.list()
+        } catch {
+            log.warning("usb: listing the broker's devices failed", metadata: ["error": "\(error)"])
+            return ([], [])
+        }
+        var unrequested: [String] = []
+        var heldElsewhere: [String] = []
+        for device in devices {
+            if !filters.contains(where: device.matches) {
+                if device.status != .attached {
+                    unrequested.append(device.serialNumber.map { "\(device.ids):\($0)" } ?? device.ids)
+                }
+            } else if device.status == .attached && device.containerID != containerID {
+                heldElsewhere.append("\(device.ids) in \(device.containerID)")
+            }
+        }
+        return (unrequested.sorted(), heldElsewhere.sorted())
     }
 
     // MARK: Devices as a resource (container usb ls / attach / detach)
@@ -276,13 +297,15 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
 
         var errors: [String] = []
         for target in targets {
+            // Only used on the VM queue.
+            nonisolated(unsafe) let device = target.device
             let error: String? = await withCheckedContinuation { continuation in
                 instance.vmQueue.async {
                     guard let controller = instance.vzVirtualMachine.usbControllers.first else {
                         continuation.resume(returning: "the VM has no USB controller")
                         return
                     }
-                    controller.detach(device: target.device) { error in
+                    controller.detach(device: device) { error in
                         continuation.resume(returning: error.map { "\($0)" })
                     }
                 }
@@ -356,12 +379,14 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         }
         waiting.forEach { $0.resume(returning: false) }
 
-        if let instance {
-            await detachAll(from: instance)
-        }
+        // Unregister first: a detached device re-enumerates within a few hundred milliseconds,
+        // and the broker hands its new accessory on only once it knows this container let go.
         if let session {
             await session.unregister()
             log.info("usb: unregistered from the broker")
+        }
+        if let instance {
+            await detachAll(from: instance)
         }
     }
 
@@ -393,7 +418,6 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
         let serial = serialNumber ?? ""
         guard filters.contains(where: { $0.matches(vendorID: vendorID, productID: productID, serialNumber: serialNumber) }) else {
             log.info("usb: accessory does not match --usb, ignoring", metadata: ["registryID": "\(registryID)", "ids": "\(ids)", "serial": "\(serial)"])
-            _ = lock.withLock { unrequested.insert(serial.isEmpty ? ids : ids + ":" + serial) }
             return "ignored: \(ids) not requested"
         }
 

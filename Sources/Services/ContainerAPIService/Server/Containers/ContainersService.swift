@@ -844,6 +844,48 @@ public actor ContainersService {
         return try await client.statistics()
     }
 
+    // MARK: - USB passthrough
+
+    /// The USB devices reported by every running container that was started with `--usb`.
+    public func usbList() async throws -> [USBDeviceState] {
+        self.log.debug("\(#function)")
+
+        var devices: [USBDeviceState] = []
+        for state in self.containers.values.sorted(by: { $0.snapshot.id < $1.snapshot.id }) {
+            guard state.snapshot.status == .running, !state.snapshot.configuration.usbDevices.isEmpty,
+                let client = state.client
+            else {
+                continue
+            }
+            do {
+                devices += try await client.usbList()
+            } catch {
+                self.log.warning("usb: list failed", metadata: ["id": "\(state.snapshot.id)", "error": "\(error)"])
+            }
+        }
+        return devices
+    }
+
+    /// Request a USB device for a running container and attach it if it is assigned.
+    public func usbAttach(id: String, filter: USBDeviceFilter) async throws -> String {
+        self.log.debug("\(#function)")
+        return try await self.usbClient(id: id).usbAttach(filter)
+    }
+
+    /// Detach a USB device from a running container.
+    public func usbDetach(id: String, filter: USBDeviceFilter) async throws -> String {
+        self.log.debug("\(#function)")
+        return try await self.usbClient(id: id).usbDetach(filter)
+    }
+
+    private func usbClient(id: String) throws -> RuntimeClient {
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        }
+        return try state.getClient()
+    }
+
     /// Delete a container and its resources.
     public func delete(id: String, force: Bool) async throws {
         log.info(

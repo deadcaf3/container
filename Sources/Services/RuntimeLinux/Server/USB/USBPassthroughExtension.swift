@@ -39,6 +39,15 @@ protocol USBPassthroughControl: Sendable {
     func unrequestedDevices() -> [String]
     /// Detaches every passed-through device and quits the broker.
     func teardown() async
+
+    /// Every device the broker has reported, with its current state.
+    func devices() -> [USBDeviceState]
+    /// Adds `filter` and attaches any assigned device that matches. Returns a message for the user.
+    func attach(_ filter: USBDeviceFilter) async throws -> String
+    /// Detaches the attached devices matching `filter` and drops the filter. Returns a message for the user.
+    func detach(_ filter: USBDeviceFilter) async throws -> String
+    /// Records that the broker lost the device (withdrawn in the menu or unplugged).
+    func withdraw(registryID: UInt64)
 }
 
 /// Passes physical USB devices through to a container's VM.
@@ -52,7 +61,8 @@ protocol USBPassthroughControl: Sendable {
 final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthroughControl, VZUSBController.Delegate, @unchecked Sendable {
     static let brokerPath = "libexec/container/usb/container-usb.app"
 
-    private let filters: [USBDeviceFilter]
+    /// The `--usb` filters plus any added by `container usb attach`. Mutated only under `lock`.
+    private var filters: [USBDeviceFilter]
     private let containerID: String
     private let brokerURL: URL
     private let log: Logger
@@ -66,6 +76,18 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
     private var inFlight: Set<UInt64> = []
     private var unrequested: Set<String> = []
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// Every accessory the broker has forwarded, keyed by registry ID, for `usb ls` and later attaches.
+    private var known: [UInt64: KnownAccessory] = [:]
+
+    private struct KnownAccessory {
+        var accessory: AAUSBAccessory
+        var vendorID: UInt16
+        var productID: UInt16
+        var serialNumber: String?
+        var product: String?
+        /// False once the broker reports the device withdrawn or unplugged.
+        var assigned = true
+    }
 
     init(filters: [USBDeviceFilter], containerID: String, log: Logger) throws {
         guard let installRoot = ProcessInfo.processInfo.environment["CONTAINER_INSTALL_ROOT"], !installRoot.isEmpty else {
@@ -185,11 +207,163 @@ final class USBPassthroughExtension: NSObject, VZInstanceExtension, USBPassthrou
             log.warning("usb: broker sent an invalid accessory representation")
             return "rejected: invalid accessory representation"
         }
+        remember(accessory)
         return receive(accessory)
     }
 
     func unrequestedDevices() -> [String] {
         lock.withLock { unrequested.sorted() }
+    }
+
+    // MARK: Devices as a resource (container usb ls / attach / detach)
+
+    func devices() -> [USBDeviceState] {
+        lock.withLock {
+            known.map { registryID, device in
+                USBDeviceState(
+                    registryID: registryID,
+                    vendorID: device.vendorID,
+                    productID: device.productID,
+                    serialNumber: device.serialNumber,
+                    product: device.product,
+                    containerID: containerID,
+                    status: attached[registryID] != nil ? .attached : device.assigned ? .assigned : .unassigned
+                )
+            }
+            .sorted { ($0.ids, $0.registryID) < ($1.ids, $1.registryID) }
+        }
+    }
+
+    func attach(_ filter: USBDeviceFilter) async throws -> String {
+        enum Plan {
+            case alreadyRequested(USBDeviceFilter)
+            case attach([AAUSBAccessory])
+        }
+        let plan: Plan = lock.withLock {
+            if let existing = filters.first(where: { $0.covers(filter) }) {
+                return .alreadyRequested(existing)
+            }
+            filters.append(filter)
+            let candidates = known.filter { registryID, device in
+                device.assigned && attached[registryID] == nil && filter.matches(vendorID: device.vendorID, productID: device.productID)
+            }
+            return .attach(candidates.values.map(\.accessory))
+        }
+
+        switch plan {
+        case .alreadyRequested(let existing):
+            return "\(containerID) already requests \(existing); nothing to do"
+        case .attach(let candidates):
+            log.info("usb: filter added", metadata: ["filter": "\(filter)", "candidates": "\(candidates.count)"])
+            var attachedIDs: [String] = []
+            var failed: [String] = []
+            for accessory in candidates {
+                // The broker's path does the matching, attach and bookkeeping; the filter now covers it.
+                _ = receive(accessory)
+                let ids = lock.withLock { known[accessory.registryID].map { String(format: "%04x:%04x", $0.vendorID, $0.productID) } } ?? "\(filter)"
+                if await settled(accessory.registryID) {
+                    attachedIDs.append(ids)
+                } else {
+                    failed.append(ids)
+                }
+            }
+            var message = "\(containerID) now requests \(filter)"
+            if !attachedIDs.isEmpty {
+                message += "; attached \(attachedIDs.joined(separator: ", "))"
+            }
+            if !failed.isEmpty {
+                message += "; attach of \(failed.joined(separator: ", ")) failed, see `container system logs`"
+            }
+            if attachedIDs.isEmpty && failed.isEmpty {
+                message +=
+                    "; no assigned device matches yet. Choose \"Use with container\" for it in the Virtual Machine Accessories menu bar item and it attaches on its own."
+            }
+            return message
+        }
+    }
+
+    func detach(_ filter: USBDeviceFilter) async throws -> String {
+        nonisolated(unsafe) let targets: [(registryID: UInt64, device: VZUSBPassthroughDevice, ids: String)] = lock.withLock {
+            let matching = attached.filter { filter.matches(vendorID: $0.value.vendorID, productID: $0.value.productID) }
+            guard !matching.isEmpty else {
+                return []
+            }
+            for registryID in matching.keys {
+                attached.removeValue(forKey: registryID)
+            }
+            filters.removeAll { $0 == filter }
+            return matching.map { ($0.key, $0.value.device, String(format: "%04x:%04x", $0.value.vendorID, $0.value.productID)) }
+        }
+        guard !targets.isEmpty else {
+            throw ContainerizationError(.notFound, message: "no attached USB device matches \(filter)")
+        }
+        guard let instance = lock.withLock({ self.instance }) else {
+            throw ContainerizationError(.invalidState, message: "the VM is not running")
+        }
+
+        var errors: [String] = []
+        for target in targets {
+            let error: String? = await withCheckedContinuation { continuation in
+                instance.vmQueue.async {
+                    guard let controller = instance.vzVirtualMachine.usbControllers.first else {
+                        continuation.resume(returning: "the VM has no USB controller")
+                        return
+                    }
+                    controller.detach(device: target.device) { error in
+                        continuation.resume(returning: error.map { "\($0)" })
+                    }
+                }
+            }
+            if let error {
+                log.warning("usb: detach failed", metadata: ["registryID": "\(Self.hex(target.registryID))", "ids": "\(target.ids)", "error": "\(error)"])
+                errors.append("\(target.ids): \(error)")
+            } else {
+                log.info("usb: detached by request, device returned to macOS", metadata: ["registryID": "\(Self.hex(target.registryID))", "ids": "\(target.ids)"])
+            }
+        }
+        guard errors.isEmpty else {
+            throw ContainerizationError(.internalError, message: "detach failed for \(errors.joined(separator: "; "))")
+        }
+        return "detached \(targets.map(\.ids).joined(separator: ", ")) from \(containerID)"
+    }
+
+    func withdraw(registryID: UInt64) {
+        let known = lock.withLock {
+            guard self.known[registryID] != nil else {
+                return false
+            }
+            self.known[registryID]?.assigned = false
+            return true
+        }
+        if known {
+            log.info("usb: device withdrawn by the broker", metadata: ["registryID": "\(Self.hex(registryID))"])
+        }
+    }
+
+    /// Records a forwarded accessory so `usb ls` can show it and a later `usb attach` can use it.
+    private func remember(_ accessory: AAUSBAccessory) {
+        guard let (vendorID, productID) = Self.ids(from: accessory.deviceDescriptorData) else {
+            return
+        }
+        let serialNumber = USBDeviceProperties.serialNumber(registryID: accessory.registryID)
+        let product = USBDeviceProperties.product(registryID: accessory.registryID)
+        lock.withLock {
+            known[accessory.registryID] = KnownAccessory(
+                accessory: accessory, vendorID: vendorID, productID: productID, serialNumber: serialNumber, product: product)
+        }
+    }
+
+    /// Waits for an attach started by `receive` to finish; true if the device ended up attached.
+    private func settled(_ registryID: UInt64, timeout: Duration = .seconds(10)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            let (pending, isAttached) = lock.withLock { (inFlight.contains(registryID), attached[registryID] != nil) }
+            if !pending {
+                return isAttached
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     func teardown() async {

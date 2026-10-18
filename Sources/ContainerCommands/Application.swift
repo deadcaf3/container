@@ -90,6 +90,12 @@ public struct Application: AsyncLoggableCommand {
                 ]
             ),
             CommandGroup(
+                name: "USB",
+                subcommands: [
+                    USBCommand.self
+                ]
+            ),
+            CommandGroup(
                 name: "Other",
                 subcommands: Self.otherCommands()
             ),

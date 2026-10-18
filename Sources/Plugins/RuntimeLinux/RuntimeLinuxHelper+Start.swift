@@ -89,6 +89,7 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.createEndpoint.rawValue: XPCServer.route(server.createEndpoint),
                         // The USB broker is a separate app and reaches the runtime by name.
                         RuntimeRoutes.usbAccessory.rawValue: XPCServer.route(server.usbAccessory),
+                        RuntimeRoutes.usbAccessoryWithdrawn.rawValue: XPCServer.route(server.usbAccessoryWithdrawn),
                     ],
                     log: log
                 )
@@ -111,6 +112,9 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.copyOut.rawValue: XPCServer.route(server.copyOut),
                         RuntimeRoutes.snapshotDisk.rawValue: XPCServer.route(server.snapshotDisk),
                         RuntimeRoutes.clean.rawValue: XPCServer.route(server.clean),
+                        RuntimeRoutes.usbList.rawValue: XPCServer.route(server.usbList),
+                        RuntimeRoutes.usbAttach.rawValue: XPCServer.route(server.usbAttach),
+                        RuntimeRoutes.usbDetach.rawValue: XPCServer.route(server.usbDetach),
                     ],
                     log: log
                 )

@@ -376,6 +376,38 @@ extension RuntimeClient {
             )
         }
     }
+
+    // MARK: - USB passthrough
+
+    /// The USB devices the container's broker has reported, with their state.
+    public func usbList() async throws -> [USBDeviceState] {
+        let request = XPCMessage(route: RuntimeRoutes.usbList.rawValue)
+        let response = try await self.client.send(request)
+        guard let data = response.dataNoCopy(key: RuntimeKeys.usbDevices.rawValue) else {
+            throw ContainerizationError(.internalError, message: "no USB device data returned")
+        }
+        return try JSONDecoder().decode([USBDeviceState].self, from: data)
+    }
+
+    /// Requests `filter` and attaches any assigned device that matches. Returns a message for the user.
+    public func usbAttach(_ filter: USBDeviceFilter) async throws -> String {
+        try await usbRequest(RuntimeRoutes.usbAttach, filter: filter)
+    }
+
+    /// Detaches the attached devices matching `filter` and drops the filter. Returns a message for the user.
+    public func usbDetach(_ filter: USBDeviceFilter) async throws -> String {
+        try await usbRequest(RuntimeRoutes.usbDetach, filter: filter)
+    }
+
+    private func usbRequest(_ route: RuntimeRoutes, filter: USBDeviceFilter) async throws -> String {
+        let request = XPCMessage(route: route.rawValue)
+        request.set(key: RuntimeKeys.usbFilter.rawValue, value: try JSONEncoder().encode(filter))
+        let response = try await self.client.send(request)
+        guard let result = response.string(key: RuntimeKeys.usbResult.rawValue) else {
+            throw ContainerizationError(.internalError, message: "no USB result returned")
+        }
+        return result
+    }
 }
 
 extension XPCMessage {

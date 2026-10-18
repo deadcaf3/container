@@ -381,6 +381,43 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    // MARK: - USB passthrough
+
+    /// The USB devices known to the brokers of running `--usb` containers.
+    public func usbList() async throws -> [USBDeviceState] {
+        let request = XPCMessage(route: .containerUSBList)
+        do {
+            let response = try await xpcClient.send(request)
+            guard let data = response.dataNoCopy(key: .usbDevices) else {
+                throw ContainerizationError(.internalError, message: "no USB device data returned")
+            }
+            return try JSONDecoder().decode([USBDeviceState].self, from: data)
+        } catch {
+            throw ContainerizationError(.internalError, message: "failed to list USB devices", cause: error)
+        }
+    }
+
+    /// Requests a USB device for a running container. Returns a message for the user.
+    public func usbAttach(id: String, filter: USBDeviceFilter) async throws -> String {
+        try await usbRequest(.containerUSBAttach, id: id, filter: filter)
+    }
+
+    /// Detaches a USB device from a running container. Returns a message for the user.
+    public func usbDetach(id: String, filter: USBDeviceFilter) async throws -> String {
+        try await usbRequest(.containerUSBDetach, id: id, filter: filter)
+    }
+
+    private func usbRequest(_ route: XPCRoute, id: String, filter: USBDeviceFilter) async throws -> String {
+        let request = XPCMessage(route: route)
+        request.set(key: .id, value: id)
+        request.set(key: .usbFilter, value: try JSONEncoder().encode(filter))
+        let response = try await xpcClient.send(request)
+        guard let result = response.string(key: .usbResult) else {
+            throw ContainerizationError(.internalError, message: "no USB result returned")
+        }
+        return result
+    }
+
     public func export(id: String, archive: URL) async throws {
         let request = XPCMessage(route: .containerExport)
         request.set(key: .id, value: id)

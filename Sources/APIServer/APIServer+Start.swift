@@ -308,6 +308,9 @@ extension APIServer {
             routes[XPCRoute.containerCopyOut] = XPCServer.route(harness.copyOut)
             routes[XPCRoute.containerExport] = XPCServer.route(harness.export)
             routes[XPCRoute.containerClean] = XPCServer.route(harness.clean)
+            routes[XPCRoute.containerUSBList] = XPCServer.route(harness.usbList)
+            routes[XPCRoute.containerUSBAttach] = XPCServer.route(harness.usbAttach)
+            routes[XPCRoute.containerUSBDetach] = XPCServer.route(harness.usbDetach)
 
             return service
         }

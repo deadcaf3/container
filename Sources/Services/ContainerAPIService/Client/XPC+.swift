@@ -145,6 +145,11 @@ public enum XPCKeys: String {
     case destinationPath
     case fileMode
     case createParents
+
+    /// USB passthrough: a JSON `[USBDeviceState]`, a JSON `USBDeviceFilter`, and a result message
+    case usbDevices
+    case usbFilter
+    case usbResult
 }
 
 public enum XPCRoute: String {
@@ -168,6 +173,9 @@ public enum XPCRoute: String {
     case containerCopyOut
     case containerExport
     case containerClean
+    case containerUSBList
+    case containerUSBAttach
+    case containerUSBDetach
 
     case pluginLoad
     case pluginGet

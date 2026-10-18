@@ -59,4 +59,11 @@ public enum RuntimeKeys: String {
 
     /// A non-fatal message from bootstrap for the user, such as USB devices not attached yet.
     case warning
+
+    /// USB passthrough: a JSON `[USBDeviceState]`, a JSON `USBDeviceFilter`, a device registry ID,
+    /// and a message describing what the runtime did.
+    case usbDevices
+    case usbFilter
+    case usbRegistryID
+    case usbResult
 }

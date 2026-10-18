@@ -422,4 +422,45 @@ public struct ContainersHarness: Sendable {
         try await service.clean(id: id)
         return message.reply()
     }
+
+    // MARK: - USB passthrough
+
+    @Sendable
+    public func usbList(_ message: XPCMessage) async throws -> XPCMessage {
+        let devices = try await service.usbList()
+        let reply = message.reply()
+        reply.set(key: .usbDevices, value: try JSONEncoder().encode(devices))
+        return reply
+    }
+
+    @Sendable
+    public func usbAttach(_ message: XPCMessage) async throws -> XPCMessage {
+        let (id, filter) = try Self.usbTarget(message)
+        let result = try await service.usbAttach(id: id, filter: filter)
+        let reply = message.reply()
+        reply.set(key: .usbResult, value: result)
+        return reply
+    }
+
+    @Sendable
+    public func usbDetach(_ message: XPCMessage) async throws -> XPCMessage {
+        let (id, filter) = try Self.usbTarget(message)
+        let result = try await service.usbDetach(id: id, filter: filter)
+        let reply = message.reply()
+        reply.set(key: .usbResult, value: result)
+        return reply
+    }
+
+    private static func usbTarget(_ message: XPCMessage) throws -> (String, USBDeviceFilter) {
+        guard let id = message.string(key: .id) else {
+            throw ContainerizationError(.invalidArgument, message: "id cannot be empty")
+        }
+        guard ManagedContainer.nameValid(id) else {
+            throw ContainerizationError(.invalidArgument, message: "container ID \(id) is not a valid container ID")
+        }
+        guard let data = message.dataNoCopy(key: .usbFilter) else {
+            throw ContainerizationError(.invalidArgument, message: "missing USB device filter")
+        }
+        return (id, try JSONDecoder().decode(USBDeviceFilter.self, from: data))
+    }
 }

@@ -162,6 +162,24 @@ default 5) and never fails if a device is missing: one assigned later is attache
 container runs. `container stop` detaches the device, quits the broker and returns the device
 to macOS.
 
+## Devices as a resource
+
+While a `--usb` container runs, its devices can be listed and moved without restarting it:
+
+```bash
+bin/container usb ls                     # ID, serial, product and state of every device the broker has seen
+bin/container usb attach 1366 probe      # request a device for a running container, attach it if assigned
+bin/container usb detach 1366 [probe]    # return it to macOS; the container is optional when only one holds it
+```
+
+`usb ls` shows each device as `attached to <container>`, `assigned` (chosen in the menu but not
+attached, usually because it matches no filter) or `unassigned` (withdrawn in the menu or
+unplugged). The device argument is the `--usb` selector. `attach` is a no-op with a message when
+the container already requests a filter covering the device; `detach` fails when no attached
+device matches. Both need a running container that was started with `--usb`, since only those
+VMs have a USB controller. Devices are known per container: a device appears once per `--usb`
+container whose broker was offered it.
+
 ## How it works
 
 The path from the USB port to a process in the container, using only Apple frameworks and the

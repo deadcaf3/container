@@ -409,6 +409,66 @@ public actor RuntimeService {
         return reply
     }
 
+    /// The USB broker reports that an assigned accessory was withdrawn in the menu or unplugged.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with the following parameters:
+    ///     - usbRegistryID: The registry ID of the accessory.
+    @Sendable
+    public func usbAccessoryWithdrawn(_ message: XPCMessage) async throws -> XPCMessage {
+        guard let usbPassthrough = self.usbPassthrough else {
+            throw ContainerizationError(.invalidState, message: "container was not started with --usb")
+        }
+        usbPassthrough.withdraw(registryID: message.uint64(key: RuntimeKeys.usbRegistryID.rawValue))
+        return message.reply()
+    }
+
+    /// List the USB devices the broker has reported and their state.
+    ///
+    /// - Returns: An XPC message with a JSON `[USBDeviceState]` under `usbDevices`.
+    @Sendable
+    public func usbList(_ message: XPCMessage) async throws -> XPCMessage {
+        let reply = message.reply()
+        reply.set(key: RuntimeKeys.usbDevices.rawValue, value: try JSONEncoder().encode(try self.usbControl().devices()))
+        return reply
+    }
+
+    /// Request a USB device filter and attach any assigned device that matches.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with a JSON `USBDeviceFilter` under `usbFilter`.
+    ///
+    /// - Returns: An XPC message with a `usbResult` string for the user.
+    @Sendable
+    public func usbAttach(_ message: XPCMessage) async throws -> XPCMessage {
+        let result = try await self.usbControl().attach(try message.usbFilter())
+        let reply = message.reply()
+        reply.set(key: RuntimeKeys.usbResult.rawValue, value: result)
+        return reply
+    }
+
+    /// Detach the attached devices matching a filter and drop the filter.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with a JSON `USBDeviceFilter` under `usbFilter`.
+    ///
+    /// - Returns: An XPC message with a `usbResult` string for the user.
+    @Sendable
+    public func usbDetach(_ message: XPCMessage) async throws -> XPCMessage {
+        let result = try await self.usbControl().detach(try message.usbFilter())
+        let reply = message.reply()
+        reply.set(key: RuntimeKeys.usbResult.rawValue, value: result)
+        return reply
+    }
+
+    /// The passthrough control, or the error the attach path reports for a VM without USB.
+    private func usbControl() throws -> any USBPassthroughControl {
+        guard let usbPassthrough = self.usbPassthrough else {
+            throw ContainerizationError(.unsupported, message: "the VM has no USB controller")
+        }
+        return usbPassthrough
+    }
+
     /// Start the container workload inside the virtual machine.
     ///
     /// - Parameters:
@@ -1520,6 +1580,13 @@ extension XPCMessage {
             throw ContainerizationError(.invalidArgument, message: "empty StopOptions")
         }
         return try JSONDecoder().decode(ContainerStopOptions.self, from: data)
+    }
+
+    fileprivate func usbFilter() throws -> USBDeviceFilter {
+        guard let data = self.dataNoCopy(key: RuntimeKeys.usbFilter.rawValue) else {
+            throw ContainerizationError(.invalidArgument, message: "missing USB device filter")
+        }
+        return try JSONDecoder().decode(USBDeviceFilter.self, from: data)
     }
 
     fileprivate func setState(_ state: SandboxSnapshot) throws {

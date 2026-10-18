@@ -35,8 +35,9 @@ import os
 
 let logger = Logger(subsystem: "com.apple.container", category: "USBBroker")
 
-/// Must match `RuntimeRoutes.usbAccessory`.
+/// Must match `RuntimeRoutes.usbAccessory` and `RuntimeRoutes.usbAccessoryWithdrawn`.
 let usbAccessoryRoute = "com.apple.container.runtime/usbAccessory"
+let usbAccessoryWithdrawnRoute = "com.apple.container.runtime/usbAccessoryWithdrawn"
 
 struct BrokerArguments: Sendable {
     var service: String
@@ -103,6 +104,12 @@ final class Broker: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
     func usbAccessoryDidDisconnect(_ usbAccessory: AAUSBAccessory) {
         _ = lock.withLock { forwarded.remove(usbAccessory.registryID) }
         logger.info("device withdrawn: \(String(format: "0x%llx", usbAccessory.registryID), privacy: .public)")
+        // Tell the runtime so `container usb ls` shows the device as unassigned.
+        let message = XPCMessage(route: usbAccessoryWithdrawnRoute)
+        message.set(key: "usbRegistryID", value: usbAccessory.registryID)
+        Task { [self] in
+            _ = try? await client.send(message, responseTimeout: .seconds(10))
+        }
     }
 
     private func forward(_ accessory: AAUSBAccessory) {

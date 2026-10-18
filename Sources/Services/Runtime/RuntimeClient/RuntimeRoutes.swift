@@ -65,4 +65,12 @@ public enum RuntimeRoutes: String {
 
     /// Attach a USB accessory forwarded by the USB broker (served on the mach service).
     case usbAccessory = "com.apple.container.runtime/usbAccessory"
+    /// The USB broker reports that an assigned accessory was withdrawn or unplugged (served on the mach service).
+    case usbAccessoryWithdrawn = "com.apple.container.runtime/usbAccessoryWithdrawn"
+    /// List the USB devices the broker has reported and their state.
+    case usbList = "com.apple.container.runtime/usbList"
+    /// Request a USB device filter and attach any assigned device that matches.
+    case usbAttach = "com.apple.container.runtime/usbAttach"
+    /// Detach the attached devices matching a filter and drop the filter.
+    case usbDetach = "com.apple.container.runtime/usbDetach"
 }

@@ -157,6 +157,23 @@ to macOS.
 
 ## How it works
 
+The path from the USB port to a process in the container, using only Apple frameworks and the
+Linux kernel:
+
+1. The device is plugged into the Mac. macOS owns it.
+2. `container-usb.app`, the broker, registers with AccessoryAccess and the user assigns the
+   device to it in the **Virtual Machine Accessories** menu (`AAUSBAccessory`, macOS 27).
+3. The broker forwards the accessory to `container-runtime-linux` over XPC.
+4. The runtime attaches it to the container's VM as a `VZUSBPassthroughDevice`
+   (Virtualization framework).
+5. The guest kernel enumerates it and creates `/dev/bus/usb/<bus>/<dev>`, plus class nodes such
+   as `/dev/ttyACM0` for a CDC ACM interface.
+6. Any Linux tool in the container opens those nodes as usual: `lsusb`, `probe-rs`, `JLinkExe`,
+   `openocd`, `west flash`, `screen /dev/ttyACM0`.
+
+Nothing in the container is aware of the passthrough; `probe-rs` appears above only as the smoke
+test in the examples.
+
 Three constraints on macOS 27 shape the design, each found by experiment:
 
 1. **AccessoryAccess only assigns devices to an ordinary, Dock-visible application**
